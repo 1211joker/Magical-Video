@@ -4,7 +4,6 @@
 YouTube → youtube-transcript-api（专门提取字幕，不受 yt-dlp PO Token 限制）
 B站     → yt-dlp 获取字幕 URL → 下载 VTT → 解析
 """
-import json
 import asyncio
 import subprocess
 import sys
@@ -12,7 +11,6 @@ import os
 import tempfile
 import re
 from typing import Optional
-import httpx
 from config import YTDLP_PROXY, YTDLP_TIMEOUT
 
 
@@ -58,17 +56,22 @@ async def _extract_youtube_subs(url: str) -> Optional[str]:
         return None
 
 
-def _get_bilibili_sub_urls(url: str, cookies_file: Optional[str] = None) -> dict:
+def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_dir: str) -> Optional[str]:
     """
-    同步方法：用 yt-dlp --dump-json 获取 B站 字幕信息。
-    B站 不受 YouTube PO Token 限制，yt-dlp 可以正常获取。
+    同步方法：用 yt-dlp --write-subs 下载 B站 字幕文件到 output_dir。
+
+    返回下载的字幕文件路径，无字幕时返回 None。
     """
     cmd = [
         sys.executable, "-m", "yt_dlp",
-        "--dump-json",
+        "--skip-download",           # 不下载视频
+        "--write-subs",              # 下载手动字幕
+        "--write-auto-subs",         # 下载自动生成字幕
+        "--sub-format", "vtt",       # 要 VTT 格式
+        "--sub-langs", "zh-Hans,zh-CN,zh-TW,zh,ai-zh,en",
         "--no-playlist",
-        "--flat-playlist",
         "--no-check-certificates",
+        "-o", os.path.join(output_dir, "%(title)s.%(ext)s"),
         url
     ]
     if cookies_file:
@@ -76,44 +79,31 @@ def _get_bilibili_sub_urls(url: str, cookies_file: Optional[str] = None) -> dict
     if YTDLP_PROXY:
         cmd.extend(["--proxy", YTDLP_PROXY])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT + 30)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp 执行失败: {result.stderr[:200]}")
+    # yt-dlp 返回非 0 也可能成功下载了字幕（视频格式不可用但字幕OK）
+    # 所以不检查 returncode，直接找字幕文件
 
-    data = json.loads(result.stdout)
-    return {
-        "subtitles": data.get("subtitles", {}) or {},
-        "automatic_captions": data.get("automatic_captions", {}) or {},
-    }
+    # 在 output_dir 中找 .vtt 文件，按语言优先级排序
+    vtt_files = []
+    for fname in os.listdir(output_dir):
+        if fname.endswith(".vtt"):
+            fpath = os.path.join(output_dir, fname)
+            vtt_files.append(fpath)
 
+    if not vtt_files:
+        return None
 
-def _pick_best_subtitle(sub_data: dict) -> Optional[dict]:
-    """从字幕数据中按优先级选中最佳字幕"""
-    manual = sub_data.get("subtitles", {})
-    auto = sub_data.get("automatic_captions", {})
+    # 按文件名中的语言优先级排序（中文优先）
+    def lang_priority(fpath: str) -> int:
+        name = os.path.basename(fpath).lower()
+        for i, lp in enumerate(LANG_PRIORITY_BILI):
+            if re.search(lp, name, re.IGNORECASE):
+                return i
+        return 99  # 未知语言排最后
 
-    # 先找手动字幕
-    for lang_pattern in LANG_PRIORITY_BILI:
-        for lang_key in manual:
-            if re.search(lang_pattern, lang_key, re.IGNORECASE):
-                return {
-                    "url": manual[lang_key][0]["url"],
-                    "ext": manual[lang_key][0].get("ext", "vtt"),
-                    "lang": lang_key,
-                }
-
-    # 再找自动生成字幕
-    for lang_pattern in LANG_PRIORITY_BILI:
-        for lang_key in auto:
-            if re.search(lang_pattern, lang_key, re.IGNORECASE):
-                return {
-                    "url": auto[lang_key][0]["url"],
-                    "ext": auto[lang_key][0].get("ext", "vtt"),
-                    "lang": f"{lang_key}（自动生成）",
-                }
-
-    return None
+    vtt_files.sort(key=lang_priority)
+    return vtt_files[0]  # 返回优先级最高的
 
 
 def _parse_vtt(text: str) -> str:
@@ -167,7 +157,15 @@ def _parse_vtt(text: str) -> str:
 
 
 async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Optional[str]:
-    """用 yt-dlp 提取 B站 字幕"""
+    """
+    用 yt-dlp 下载 B站 字幕（--write-subs + --write-auto-subs）。
+
+    流程：
+    1. 创建临时目录
+    2. yt-dlp 下载字幕 .vtt 文件到临时目录
+    3. 读取并解析 VTT → 纯文本
+    4. 清理临时目录和 cookies 文件
+    """
     cookies_file = None
     if cookies:
         tmp = tempfile.NamedTemporaryFile(
@@ -177,22 +175,20 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
         tmp.close()
         cookies_file = tmp.name
 
+    output_dir = tempfile.mkdtemp(prefix="bili_subs_")
+
     try:
-        sub_data = await asyncio.to_thread(_get_bilibili_sub_urls, url, cookies_file)
-        best = _pick_best_subtitle(sub_data)
-        if not best:
+        # 同步下载字幕（在线程池中执行，不阻塞事件循环）
+        vtt_path = await asyncio.to_thread(
+            _download_bilibili_subs_sync, url, cookies_file, output_dir
+        )
+
+        if not vtt_path:
             return None
 
-        # 下载字幕文件
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Referer": "https://www.bilibili.com",
-        }
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(best["url"], headers=headers)
-            if resp.status_code != 200:
-                return None
-            raw_text = resp.text
+        # 读取 VTT 文件
+        with open(vtt_path, "r", encoding="utf-8") as f:
+            raw_text = f.read()
 
         plain = _parse_vtt(raw_text)
         if not plain or len(plain) < 10:
@@ -205,8 +201,13 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
         return None
 
     finally:
+        # 清理 cookies 临时文件
         if cookies_file and os.path.exists(cookies_file):
             os.unlink(cookies_file)
+        # 清理字幕临时目录
+        import shutil
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir, ignore_errors=True)
 
 
 async def extract_subtitle_text(
