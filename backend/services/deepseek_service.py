@@ -71,7 +71,7 @@ async def analyze_subtitles(
     }
 
     body = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},

@@ -28,39 +28,20 @@
       </ul>
     </div>
 
-    <!-- 思维导图（模块 4 完善） -->
+    <!-- 思维导图 -->
     <div class="card analysis-section" v-if="result.mindmap">
       <h3 class="section-title">
         <span class="section-icon">🧠</span>
         思维导图
       </h3>
-      <div class="mindmap-placeholder">
-        <div
-          v-for="(child, idx) in result.mindmap.children"
-          :key="idx"
-          class="mindmap-branch"
-        >
-          <div class="branch-node">{{ child.content }}</div>
-          <div class="branch-leaves" v-if="child.children">
-            <span
-              v-for="(leaf, li) in child.children.slice(0, 4)"
-              :key="li"
-              class="leaf-tag"
-            >
-              {{ leaf.content }}
-            </span>
-            <span v-if="child.children.length > 4" class="leaf-tag more">
-              +{{ child.children.length - 4 }}
-            </span>
-          </div>
-        </div>
-      </div>
-      <p class="mindmap-hint">💡 模块 4 将展示完整交互式思维导图</p>
+      <MindMap :data="result.mindmap" />
     </div>
   </div>
 </template>
 
 <script setup>
+import MindMap from './MindMap.vue'
+
 defineProps({
   result: {
     type: Object,
@@ -144,55 +125,5 @@ defineProps({
   line-height: 1.7;
   color: var(--text-secondary);
   padding-top: 1px;
-}
-
-/* 思维导图占位 */
-.mindmap-placeholder {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.mindmap-branch {
-  padding: 12px 16px;
-  background: #f9fafb;
-  border-radius: var(--radius-sm);
-  border-left: 3px solid var(--text-primary);
-}
-
-.branch-node {
-  font-weight: 700;
-  font-size: 0.92rem;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-}
-
-.branch-leaves {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.leaf-tag {
-  font-size: 0.8rem;
-  padding: 3px 10px;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  color: var(--text-muted);
-}
-
-.leaf-tag.more {
-  background: var(--text-primary);
-  color: #fff;
-  border-color: var(--text-primary);
-  font-weight: 600;
-}
-
-.mindmap-hint {
-  margin-top: 8px;
-  font-size: 0.82rem;
-  color: var(--text-muted);
-  text-align: center;
 }
 </style>
