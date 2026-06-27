@@ -1,6 +1,9 @@
 """
 FastAPI 应用入口
 """
+from dotenv import load_dotenv
+load_dotenv()  # 加载 .env 中的环境变量
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import analyze, download
