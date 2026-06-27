@@ -7,7 +7,7 @@
 
     <main class="app-main">
       <!-- B站 Cookies 设置（可折叠） -->
-      <CookieGuide @update:cookies="onCookiesUpdate" />
+      <CookieGuide ref="cookieGuideRef" @update:cookies="onCookiesUpdate" />
 
       <!-- 链接输入区 -->
       <div class="input-section card">
@@ -27,10 +27,16 @@
         </button>
       </div>
 
-      <!-- 错误提示 -->
+      <!-- 解析错误 -->
       <div v-if="errorMsg" class="error-banner fade-enter">
         <span class="error-text">{{ errorMsg }}</span>
         <button class="error-close" @click="errorMsg = ''">✕</button>
+      </div>
+
+      <!-- 分析错误 -->
+      <div v-if="analysisError" class="error-banner fade-enter">
+        <span class="error-text">{{ analysisError }}</span>
+        <button class="error-close" @click="analysisError = ''">✕</button>
       </div>
 
       <!-- 视频信息展示 -->
@@ -88,6 +94,7 @@ const parsing = ref(false)
 const videoInfo = ref(null)
 const errorMsg = ref('')
 const cookies = ref(null)
+const cookieGuideRef = ref(null)
 
 // AI 分析状态
 const analyzing = ref(false)
@@ -128,6 +135,10 @@ async function handleParse() {
     }
   } catch (err) {
     errorMsg.value = err.message || '解析失败，请检查链接'
+    // B站 cookies 相关错误 → 自动展开设置面板
+    if (errorMsg.value.includes('cookies') || errorMsg.value.includes('B站')) {
+      cookieGuideRef.value?.open()
+    }
   } finally {
     parsing.value = false
   }
@@ -168,6 +179,10 @@ function handleAnalyze() {
       if (event.status === 'failed') {
         analyzing.value = false
         analysisError.value = event.message
+        // B站 cookies 相关错误 → 自动展开设置面板
+        if (event.message.includes('cookies') || event.message.includes('B站')) {
+          cookieGuideRef.value?.open()
+        }
         return
       }
 

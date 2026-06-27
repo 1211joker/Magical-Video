@@ -57,7 +57,11 @@
           @input="onCookiesChange"
         ></textarea>
         <div class="paste-status">
-          <span v-if="cookiesValid" class="status-ok">✅ 已检测到 cookies（{{ cookieCount }} 条）</span>
+          <span v-if="cookiesValid" class="status-ok">✅ 已检测到完整 cookies（{{ cookieCount }} 条，含关键登录凭证）</span>
+          <span v-else-if="cookiesText && missingKeys.length > 0" class="status-warn">
+            ⚠️ 缺少关键登录字段：{{ missingKeys.join('、') }}，请重新导出完整 cookies
+          </span>
+          <span v-else-if="cookiesText && cookieCount < 3" class="status-warn">⚠️ cookies 内容太少（至少需要 3 条），请确认复制完整</span>
           <span v-else-if="cookiesText" class="status-warn">⚠️ 格式不太对，请确认复制的是完整 cookies 内容</span>
           <span v-else class="status-empty">等待粘贴...</span>
         </div>
@@ -82,15 +86,34 @@ const cookiesText = ref('')
 // 事件通知父组件
 const emit = defineEmits(['update:cookies'])
 
-const cookieCount = computed(() => {
-  const lines = cookiesText.value.trim().split('\n').filter(line => {
+// 暴露给父组件：自动展开面板
+function open() {
+  expanded.value = true
+}
+
+defineExpose({ open })
+
+// B站 登录必须的 3 个关键 cookie
+const REQUIRED_COOKIES = ['DedeUserID', 'SESSDATA', 'bili_jct']
+
+const cookieLines = computed(() => {
+  return cookiesText.value.trim().split('\n').filter(line => {
     return line.trim() && !line.startsWith('#')
   })
-  return lines.length
+})
+
+const cookieCount = computed(() => cookieLines.value.length)
+
+// 检查是否包含 B站 的关键 cookie 名称
+const missingKeys = computed(() => {
+  const text = cookiesText.value
+  if (!text) return REQUIRED_COOKIES
+  return REQUIRED_COOKIES.filter(name => !text.includes(name))
 })
 
 const cookiesValid = computed(() => {
-  return cookieCount.value >= 3
+  // 至少要有足够的行数 且 包含所有关键 cookie
+  return cookieCount.value >= 3 && missingKeys.value.length === 0
 })
 
 function onCookiesChange() {
