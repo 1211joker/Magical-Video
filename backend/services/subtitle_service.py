@@ -200,6 +200,10 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
 
         return plain
 
+    except Exception:
+        # yt-dlp 执行失败或字幕下载失败 → 当作无字幕处理
+        return None
+
     finally:
         if cookies_file and os.path.exists(cookies_file):
             os.unlink(cookies_file)

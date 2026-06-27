@@ -43,8 +43,8 @@
       <div v-if="videoInfo && videoInfo.platform !== 'unsupported'" class="result-area fade-enter">
         <VideoInfo :info="videoInfo" />
 
-        <!-- AI 分析按钮 / 进度 / 结果 -->
-        <div class="analyze-area" v-if="!analysisResult && !analyzing">
+        <!-- AI 分析按钮（非分析中、无结果时显示，可重试） -->
+        <div class="analyze-area" v-if="!analysisResult && !analyzing && progressSteps.length === 0">
           <button
             class="btn-analyze"
             @click="handleAnalyze"
@@ -53,9 +53,13 @@
           </button>
         </div>
 
-        <!-- 分析进度 -->
-        <div v-if="analyzing" class="progress-area card fade-enter">
-          <div class="progress-header">AI 分析进行中...</div>
+        <!-- 分析进度（失败后保留，不消失） -->
+        <div v-if="progressSteps.length > 0" class="progress-area card fade-enter">
+          <div class="progress-header">
+            <span>{{ analyzing ? 'AI 分析进行中...' : 'AI 分析未完成' }}</span>
+            <button v-if="!analyzing" class="btn-retry" @click="handleAnalyze">🔄 重新分析</button>
+            <button v-if="!analyzing" class="btn-close-progress" @click="dismissProgress">✕</button>
+          </div>
           <div class="progress-steps">
             <div
               v-for="s in progressSteps"
@@ -206,6 +210,11 @@ function handleAnalyze() {
   )
 }
 
+function dismissProgress() {
+  progressSteps.length = 0
+  analysisError.value = ''
+}
+
 // 取消分析（组件卸载时）
 import { onBeforeUnmount } from 'vue'
 onBeforeUnmount(() => {
@@ -311,6 +320,38 @@ onBeforeUnmount(() => {
   font-size: 0.95rem;
   color: var(--text-primary);
   margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn-retry {
+  margin-left: auto;
+  padding: 5px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-retry:hover {
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+.btn-close-progress {
+  padding: 4px 10px;
+  font-size: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.btn-close-progress:hover {
+  color: #dc2626;
+  border-color: #fecaca;
 }
 
 .progress-steps {
