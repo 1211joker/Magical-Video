@@ -107,7 +107,51 @@
 | B站 无 cookies 解析 | ✅ 提示「需要登录，请配置 cookies」 |
 | cookies 格式检测 | ✅ 少于 3 条提示「格式不对」，>= 3 条显示「已检测到 N 条」 |
 
-### 🔲 模块 3：AI 分析（字幕 + DeepSeek + 进度推送）
+### ✅ 模块 3：AI 分析 — 字幕提取 + DeepSeek + 进度推送（已完成 — 2026-06-27）
+
+**做了什么**：
+- 后端新建了 `subtitle_service.py`（字幕提取服务）：
+  - 从 yt-dlp dump-json 中获取字幕 URL
+  - 按优先级选最佳字幕：中文手动 → 英文手动 → 中文自动 → 英文自动
+  - 下载 VTT/SRT 字幕文件 → 解析为纯文本（去掉时间戳、HTML标签、序号）
+- 后端新建了 `deepseek_service.py`（AI 分析服务）：
+  - 调用 DeepSeek chat API，传入字幕文本
+  - 自定义系统提示词，要求 AI 返回结构化 JSON（摘要 + 关键要点 + 思维导图）
+  - 处理各种异常：Key 无效、余额不足、API 限流、JSON 解析失败
+  - 字幕过长时智能截断（取前 60% + 后 20%）
+- 后端新增 `POST /api/analyze-stream` SSE 端点：
+  - 实时推送分析进度（parse → subtitles → analyze）
+  - 每步有 processing/done/failed 状态 + 中文描述
+  - 使用 fetch + ReadableStream 方式（非 EventSource），支持 POST 传递 cookies
+- 前端新建了 `AnalysisResult.vue` 组件：
+  - 📝 核心摘要卡片 — 2-3 句话总结
+  - 🔑 关键要点列表 — 编号圆点 + 卡片样式 + 交错淡入动画
+  - 🧠 思维导图占位预览 — 分支节点 + 标签云（模块 4 升级为交互式 markmap）
+- 前端 App.vue 新增分析流程：
+  - 解析成功后显示「🤖 AI 分析视频内容」虚线按钮
+  - 分析中展示三步进度条（⏳/✅/❌ 状态 + 实时消息）
+  - 分析完成自动展示 AnalysisResult 组件
+  - 支持取消分析（组件卸载时自动 abort）
+
+**新增文件**：
+- `backend/services/subtitle_service.py` — 字幕提取与解析
+- `backend/services/deepseek_service.py` — DeepSeek API 封装
+- `frontend/src/components/AnalysisResult.vue` — 分析结果展示组件
+
+**修改文件**：
+- `backend/routers/analyze.py` — 新增 `POST /api/analyze-stream` SSE 端点
+- `frontend/src/api/index.js` — 新增 `startAnalysis()`（fetch + ReadableStream SSE）
+- `frontend/src/App.vue` — 新增分析按钮 + 进度展示 + 结果展示逻辑
+
+**验证结果**：
+
+| 测试场景 | 结果 |
+|----------|------|
+| 后端 Python 导入检查 | ✅ 3 个新模块全部正常导入 |
+| 前端构建 | ✅ 20 个模块编译通过，171ms |
+| 前后端服务心跳 | ✅ 后端 8000 / 前端 5173 均正常响应 |
+
+**⚠️ 使用前提**：需要先在 `backend/.env` 中配置 `DEEPSEEK_API_KEY`，否则 AI 分析会提示 Key 未配置。
 
 ### 🔲 模块 4：结果展示（摘要 + 要点 + 思维导图）
 
@@ -186,4 +230,4 @@ cmd = [sys.executable, "-m", "yt_dlp", ...]
 
 ---
 
-*最后更新：2026-06-27 完成模块 1 + 2 + 2.5*
+*最后更新：2026-06-27 完成模块 1 + 2 + 2.5 + 3*

@@ -1,12 +1,15 @@
 """
 分析相关 API 路由
 """
+import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from urllib.parse import unquote
 import httpx
 from models.schemas import ParseRequest, ParseResponse
 from services.ytdlp_service import parse_video_info
+from services.subtitle_service import extract_subtitle_text
+from services.deepseek_service import analyze_subtitles
 
 router = APIRouter(prefix="/api", tags=["analyze"])
 
@@ -38,10 +41,8 @@ async def parse_video(req: ParseRequest):
         result = await parse_video_info(req.url, cookies=req.cookies)
         return result
     except RuntimeError as e:
-        # 预期的错误（如不支持平台、链接无效等），返回 400
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # 未预期的错误，返回 500
         raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
 
 
@@ -49,15 +50,9 @@ async def parse_video(req: ParseRequest):
 async def proxy_thumbnail(url: str):
     """
     封面图代理 — 解决 B站 / YouTube 图片防盗链问题。
-
-    原理：浏览器直接加载 B站 图片会被拒绝（防盗链）。
-    我们让后端帮忙去取图片，加上正确的 Referer 头，
-    然后原样返回给前端。这样前端就能正常显示了。
     """
-    # URL 解码（前端传来的 url 参数会被自动编码）
     image_url = unquote(url)
 
-    # 伪装成从对应网站来的请求
     headers = {
         "Referer": "https://www.bilibili.com",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -73,7 +68,93 @@ async def proxy_thumbnail(url: str):
             return StreamingResponse(
                 resp.aiter_bytes(),
                 media_type=content_type,
-                headers={"Cache-Control": "public, max-age=86400"}  # 缓存 1 天
+                headers={"Cache-Control": "public, max-age=86400"}
             )
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="封面图加载超时")
+
+
+@router.post("/analyze-stream")
+async def analyze_video_stream(req: ParseRequest):
+    """
+    AI 分析视频字幕，通过 SSE 实时推送进度。
+
+    前端调用方式：
+        POST /api/analyze-stream
+        Body: { "url": "https://...", "cookies": "..." }
+
+    SSE 事件格式：
+        data: {"step": "parse", "status": "processing", "message": "..."}
+        data: {"step": "subtitles", "status": "processing", "message": "..."}
+        data: {"step": "subtitles", "status": "done", "message": "已提取 xxx 字"}
+        data: {"step": "analyze", "status": "processing", "message": "AI 分析中..."}
+        data: {"step": "analyze", "status": "done", "result": {...}}
+    """
+
+    async def event_generator():
+        try:
+            # 步骤 1：获取视频信息（快速）
+            yield _sse("parse", "processing", "正在获取视频信息...")
+
+            try:
+                video_info = await parse_video_info(req.url, cookies=req.cookies)
+            except RuntimeError as e:
+                yield _sse("parse", "failed", str(e))
+                return
+
+            if video_info.platform == "unsupported":
+                yield _sse("parse", "failed", video_info.description or "暂不支持此平台")
+                return
+
+            yield _sse("parse", "done", f"视频：{video_info.title}")
+
+            # 步骤 2：提取字幕
+            yield _sse("subtitles", "processing", "正在提取字幕文本...")
+
+            subtitle_text = await extract_subtitle_text(req.url, cookies=req.cookies)
+
+            if not subtitle_text:
+                yield _sse("subtitles", "failed",
+                           "该视频没有可用字幕（可能未开启自动字幕或语言不支持）\n"
+                           "可以尝试提供中文字幕的视频链接")
+                return
+
+            char_count = len(subtitle_text)
+            yield _sse("subtitles", "done", f"已提取 {char_count} 字字幕文本")
+
+            # 步骤 3：AI 分析
+            yield _sse("analyze", "processing", "AI 正在分析视频内容，请稍候...")
+
+            try:
+                result = await analyze_subtitles(subtitle_text, video_info.title)
+            except RuntimeError as e:
+                yield _sse("analyze", "failed", str(e))
+                return
+
+            # 成功！推送最终结果
+            yield _sse("analyze", "done", "分析完成", {
+                "title": result.title,
+                "summary": result.summary,
+                "key_points": result.key_points,
+                "mindmap": result.mindmap,
+            })
+
+        except Exception as e:
+            yield _sse("error", "failed", f"分析过程出错: {str(e)}")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
+        }
+    )
+
+
+def _sse(step: str, status: str, message: str, result: dict = None) -> str:
+    """生成一条 SSE 事件字符串"""
+    data = {"step": step, "status": status, "message": message}
+    if result is not None:
+        data["result"] = result
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
