@@ -1,6 +1,6 @@
-# 📹 AI 视频预览下载器 — 开发日志
+# 🎬 Magical Video — 开发日志
 
-> 基于 yt-dlp + DeepSeek AI 的 Web 应用，粘贴链接 → AI 摘要 → 判断是否值得下载。
+> 基于 yt-dlp + DeepSeek AI 的 Web 应用，AI 驱动的智能视频分析下载工具。粘贴链接 → AI 解析 → 结构化摘要 → 选择性下载。
 
 ---
 
@@ -46,16 +46,25 @@
 │
 └── frontend/                 ← 前端（脸面）
     ├── src/
-    │   ├── App.vue          ← 主页面（链接输入框 + 结果区）
+    │   ├── App.vue          ← 布局壳（主题切换 + NavBar + router-view）
+    │   ├── main.js          ← 入口（注册 vue-router）
     │   ├── api/index.js     ← API 请求封装
+    │   ├── router/index.js  ← 四页面路由配置（hash mode）
     │   ├── components/      ← 组件目录
+    │   │   ├── NavBar.vue          ← 顶部导航栏
     │   │   ├── VideoInfo.vue       ← 视频信息卡片
     │   │   ├── CookieGuide.vue     ← B站 Cookies 引导
     │   │   ├── AnalysisResult.vue  ← AI 分析结果（选项卡布局）
     │   │   ├── DownloadSection.vue ← 清晰度选择 + 下载按钮
     │   │   ├── MindMap.vue         ← markmap 思维导图
-    │   │   └── SubtitleViewer.vue  ← 带时间戳的字幕展示
-    │   └── styles/main.css  ← 全局样式
+    │   │   ├── SubtitleViewer.vue  ← 带时间戳的字幕展示
+    │   │   └── StickFigures.vue    ← 简笔画动画（火柴人 + 小恐龙）
+    │   ├── views/           ← 页面视图
+    │   │   ├── HomePage.vue        ← 首页（品牌 + 动画）
+    │   │   ├── AnalysisPage.vue    ← AI解析（完整工作流）
+    │   │   ├── DownloadPage.vue    ← 视频下载（快速下载）
+    │   │   └── IssuesPage.vue      ← 问题及优化（开发记录）
+    │   └── styles/main.css  ← 全局样式（纯黑白灰配色）
     └── vite.config.js       ← Vite 配置（含代理）
 ```
 
@@ -289,7 +298,62 @@
 
 ---
 
-### 🔲 模块 6：未来规划
+### ✅ 模块 6：前端重构 — Magical Video（已完成 — 2026-06-28）
+
+**做了什么**：全面重构前端为多页面导航架构，纯黑白灰配色，增加简笔画风格趣味动画。
+
+**架构升级**：
+- 引入 `vue-router`（hash mode），从单页面巨石组件变为四页面导航结构
+- `App.vue` 从 400+ 行精简为 90 行布局壳（NavBar + `<router-view>` + 页面 Transition）
+- 四页面懒加载（`() => import(...)`），首屏体积优化
+
+**四页面布局**：
+
+| 路由 | 页面 | 功能 |
+|------|------|------|
+| `/` | 首页 | 品牌展示 + 标语 + CTA 按钮 + 简笔画动画 |
+| `/analyze` | AI解析 | 完整工作流：URL输入 → 视频信息 → AI分析 → 结构化结果 → 下载 |
+| `/download` | 视频下载 | 快速下载：URL输入 → 清晰度卡片选择 → 一键下载 |
+| `/issues` | 问题及优化 | 8 个已解决问题 + 7 个项目不足，卡片布局 |
+
+**配色系统**：
+- 纯黑白灰 CSS 变量（`--accent: #000`），移除 indigo 主题
+- 完整暗色模式支持（黑底白字），手动切换 + 系统自动检测
+- Google Fonts：Fredoka（标题，圆润趣味）+ Nunito（正文，清晰易读）
+
+**简笔画动画**（StickFigures.vue）：
+- 跳舞火柴人：SVG 关节动画（头部浮动 + 四肢 CSS keyframes 摆动）
+- 走路小恐龙：左右平移 + 尾巴摇摆 + 交替迈腿
+- `prefers-reduced-motion` 自动降级为静态
+
+**新增/修改文件**：
+- `frontend/package.json` — 新增 `vue-router` 依赖
+- `frontend/index.html` — 标题改为 Magical Video，引入 Google Fonts
+- `frontend/src/main.js` — 注册 vue-router
+- `frontend/src/App.vue` — **重写**为布局壳（NavBar + router-view + 主题切换）
+- `frontend/src/router/index.js` — **新建**四页面路由配置
+- `frontend/src/styles/main.css` — **重写**纯黑白灰 CSS 变量系统
+- `frontend/src/components/NavBar.vue` — **新建**顶部导航栏（sticky + 路由高亮）
+- `frontend/src/components/StickFigures.vue` — **新建**简笔画动画组件
+- `frontend/src/views/HomePage.vue` — **新建**首页
+- `frontend/src/views/AnalysisPage.vue` — **新建**AI解析页（从 App.vue 提取）
+- `frontend/src/views/DownloadPage.vue` — **新建**视频下载页
+- `frontend/src/views/IssuesPage.vue` — **新建**问题及优化页
+
+**验证结果**：
+
+| 测试场景 | 结果 |
+|----------|------|
+| 前端构建 | ✅ 771 模块，0 错误，306ms |
+| 四页面导航 | ✅ vue-router hash mode，页面切换动画流畅 |
+| 首页动画 | ✅ 火柴人 + 小恐龙 CSS 动画正常 |
+| AI解析流程 | ✅ 完整工作流（解析→分析→结果→下载）正常 |
+| 视频下载页 | ✅ 快速下载流程正常 |
+| 暗色模式 | ✅ 手动/自动切换均正常 |
+| 响应式 | ✅ 375px / 639px / 768px / 1024px 断点正常 |
+| 无障碍 | ✅ focus-visible / skip-link / aria 完整 |
+| 减动偏好 | ✅ `prefers-reduced-motion` 动画降级正常 |
+| 向后兼容 | ✅ 后端 0 改动，所有 API 接口无变化 |
 
 ---
 
@@ -539,4 +603,4 @@ cmd = [sys.executable, "-m", "yt_dlp", ...]
 ---
 
 
-*最后更新：2026-06-28 完成模块 5 六优先级样式打磨（响应式/暗色/动画/视觉/清理/无障碍）+ 坑 16-17；模块 4 YouTube SABR 修复验证通过（Android 客户端, H.264+AAC 360p）*
+*最后更新：2026-06-28 完成模块 6 前端重构（Magical Video 四页面导航 + 纯黑白灰配色 + 简笔画动画）；模块 1-5 全部完成*
