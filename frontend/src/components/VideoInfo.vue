@@ -95,7 +95,7 @@ function onThumbError() {
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: #e5e7eb;
+  background: var(--bg-skeleton);
   overflow: hidden;
 }
 .video-thumbnail {
@@ -108,7 +108,7 @@ function onThumbError() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #e8eaed 0%, #f0f1f3 100%);
+  background: linear-gradient(135deg, var(--bg-skeleton) 0%, var(--bg-hover) 100%);
 }
 .placeholder-icon {
   font-size: 3rem;

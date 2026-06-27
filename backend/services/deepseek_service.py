@@ -1,67 +1,108 @@
 """
-DeepSeek AI 分析服务 — 将字幕文本发送给 AI，返回结构化摘要
+DeepSeek AI 分析服务 — 将字幕文本发送给 AI，返回四维度结构化分析
 """
 import json
+import re as _re
 import httpx
-from models.schemas import AnalysisResult
+from models.schemas import (
+    AnalysisResult, OutlineItem, KeyPoint, ConclusionItem
+)
 from config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL, AI_ANALYSIS_TIMEOUT
 
 
-# AI 分析的系统提示词
-SYSTEM_PROMPT = """你是一个专业的视频内容分析助手。我会给你视频字幕文本，请你帮我做三件事：
+# AI 分析的系统提示词 — 思维导图为主，其他维度为辅
+SYSTEM_PROMPT = """你是一个专业的视频内容分析助手。我会给你视频字幕文本，请仔细阅读后从以下五个维度进行分析。
 
-1. **核心摘要**：用 2-3 句话概括视频的核心内容，语言简洁有力。
-2. **关键要点**：列出 3-5 个关键要点，每个要点一句话说清楚。
-3. **思维导图**：把视频内容组织成层级结构，方便生成脑图。用嵌套的 JSON 格式表达，根节点是视频主题，下面分 2-4 个大类，每个大类下面有若干具体点。
+其中 **思维导图是最重要的输出**，请投入最多精力构建一棵详尽的知识树。
 
-请严格按以下 JSON 格式回复（不要加其他文字）：
-{
-  "summary": "核心摘要内容...",
-  "key_points": ["要点1", "要点2", "要点3"],
-  "mindmap": {
-    "content": "视频主题",
+## 思维导图 (mindmap) —— 核心输出
+
+思维导图要完整呈现视频的全部知识结构。要求：
+- 至少 5-7 个一级分支，覆盖视频所有核心话题
+- 每个一级分支至少展开到第 4 层（根→一级→二级→三级→四级）
+- 总节点数不少于 30 个，越多越好
+- 每个节点文字必须包含具体信息：数字、术语、案例名、方法论名称、因果关系等。不要写"介绍""总结""分析"这种空洞标题
+- 把视频中提到的所有例子、数据、方法、对比、结论都放进对应的节点
+- 宁可多不可少——长视频可以到 50+ 节点
+
+示例结构（注意每一层都是具体内容）：
+"content": "机器学习过拟合问题",
+"children": [
+  {
+    "content": "过拟合的定义与判断标准",
     "children": [
       {
-        "content": "大类A",
+        "content": "定义：模型在训练集表现好但泛化差",
         "children": [
-          {"content": "具体点1"},
-          {"content": "具体点2"}
+          {"content": "训练准确率99%但测试仅85%"},
+          {"content": "本质：模型记住了噪声而非规律"}
+        ]
+      },
+      {
+        "content": "判断标准",
+        "children": [
+          {"content": "训练/验证集准确率差距>5%需警惕"},
+          {"content": "学习曲线：训练误差持续下降而验证误差回升"}
         ]
       }
     ]
   }
+]
+
+## 概述 (overview)
+2-3 句话概括视频核心内容和目标受众。
+
+## 大纲 (outline)
+按时间顺序拆分成 4-8 个段落，每个段落包含时间、主题、详细内容。
+
+## 关键要点 (key_points)
+5-8 个最重要的观点，附带原话或数据作为证据。
+
+## 总结 (conclusions)
+2-4 条可执行结论。
+
+## JSON 格式
+
+{
+  "overview": " ... ",
+  "outline": [{"time": "00:00-03:20", "topic": "段落主题", "detail": "详细内容"}],
+  "key_points": [{"point": "具体观点", "evidence": "原话引用"}],
+  "conclusions": [{"text": "可执行结论"}],
+  "mindmap": { "content": "...", "children": [...] }
 }
 
-注意：
-- 如果字幕是英文，请用中文输出分析结果。
-- 去掉字幕中的语气词（如"嗯""啊""然后"），保留实质内容。
-- 遇到明显是广告/推广的内容，如实标注。
-"""
+## 分析原则
+- 保留视频中所有具体数据、案例、术语、人名、原话，不要概括化
+- 去噪：去掉语气词、重复语句、广告内容
+- 英文输入 → 中文输出
+- 思维导图优先级最高：为保导图完整，可适当缩减大纲和要点
+- 思维导图不要因 token 限制而偷工减料，必须完整
+- JSON 必须合法，不要截断"""
 
 
 async def analyze_subtitles(
     subtitle_text: str,
     video_title: str = "",
 ) -> AnalysisResult:
-    """
-    调用 DeepSeek API 分析字幕文本。
-
-    参数：
-    - subtitle_text: 字幕纯文本
-    - video_title: 视频标题（用于上下文）
-
-    返回 AnalysisResult（摘要 + 要点 + 脑图结构）。
-    """
+    """调用 DeepSeek API 分析字幕文本。"""
     if not DEEPSEEK_API_KEY:
         raise RuntimeError("DeepSeek API Key 未配置，请在 backend/.env 中设置 DEEPSEEK_API_KEY")
 
-    # 截断过长字幕（DeepSeek 上下文长度够大，但控制成本）
-    max_chars = 8000
+    # 更多上下文 → AI 能提取更多细节
+    max_chars = 25000
     if len(subtitle_text) > max_chars:
-        # 取前 60% 和后 20%，中间部分通常不太重要
-        head = subtitle_text[:int(max_chars * 0.6)]
+        head = subtitle_text[:int(max_chars * 0.2)]
+        mid_start = len(subtitle_text) // 2 - int(max_chars * 0.3)
+        mid_end = mid_start + int(max_chars * 0.6)
+        middle = subtitle_text[mid_start:mid_end]
         tail = subtitle_text[-int(max_chars * 0.2):]
-        subtitle_text = head + "\n...(中间省略)...\n" + tail
+        subtitle_text = (
+            head + "\n...(前段省略)...\n" +
+            middle + "\n...(后段省略)...\n" +
+            tail
+        )
+        if len(subtitle_text) > max_chars + 500:
+            subtitle_text = subtitle_text[:max_chars]
 
     user_message = f"视频标题：{video_title}\n\n字幕内容：\n{subtitle_text}"
 
@@ -76,8 +117,8 @@ async def analyze_subtitles(
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
-        "temperature": 0.3,  # 低温度，输出更稳定
-        "max_tokens": 2000,
+        "temperature": 0.3,
+        "max_tokens": 10000,
         "stream": False,
     }
 
@@ -97,15 +138,12 @@ async def analyze_subtitles(
 
         data = resp.json()
 
-    # 提取 AI 回复文本
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError):
         raise RuntimeError("AI 返回格式异常，请重试")
 
-    # 解析 JSON（AI 可能返回 markdown 代码块包裹的 JSON）
     content = content.strip()
-    # 去掉可能的 ```json 和 ``` 包裹
     if content.startswith("```"):
         content = content.split("\n", 1)[1] if "\n" in content else content[3:]
         if content.endswith("```"):
@@ -115,23 +153,41 @@ async def analyze_subtitles(
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
-        # 尝试提取 JSON 对象
-        import re
-        match = re.search(r"\{[\s\S]*\}", content)
+        match = _re.search(r"\{[\s\S]*\}", content)
         if match:
             parsed = json.loads(match.group())
         else:
             raise RuntimeError("AI 分析结果格式异常，请重试")
 
-    summary = parsed.get("summary", "")
-    key_points = parsed.get("key_points", [])
+    overview = parsed.get("overview", "")
+
+    outline = []
+    for item in parsed.get("outline", []):
+        if isinstance(item, dict):
+            outline.append(OutlineItem(
+                time=item.get("time", ""),
+                topic=item.get("topic", ""),
+                detail=item.get("detail", "")
+            ))
+
+    key_points = []
+    for item in parsed.get("key_points", []):
+        if isinstance(item, str):
+            key_points.append(KeyPoint(point=item))
+        elif isinstance(item, dict):
+            key_points.append(KeyPoint(
+                point=item.get("point", ""),
+                evidence=item.get("evidence", "")
+            ))
+
+    conclusions = []
+    for item in parsed.get("conclusions", []):
+        if isinstance(item, str):
+            conclusions.append(ConclusionItem(text=item))
+        elif isinstance(item, dict):
+            conclusions.append(ConclusionItem(text=item.get("text", "")))
+
     mindmap = parsed.get("mindmap", {"content": video_title or "视频分析", "children": []})
-
-    # 确保 key_points 是列表
-    if isinstance(key_points, str):
-        key_points = [key_points]
-
-    # 确保 mindmap 有基本结构
     if not mindmap.get("content"):
         mindmap["content"] = video_title or "视频分析"
     if "children" not in mindmap:
@@ -139,7 +195,9 @@ async def analyze_subtitles(
 
     return AnalysisResult(
         title=video_title,
-        summary=summary,
-        key_points=key_points[:5],  # 最多 5 个要点
+        overview=overview,
+        outline=outline,
+        key_points=key_points,
+        conclusions=conclusions,
         mindmap=mindmap,
     )

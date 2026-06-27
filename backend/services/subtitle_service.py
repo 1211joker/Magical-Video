@@ -2,7 +2,11 @@
 字幕提取服务 — 从视频中提取字幕文本。
 
 YouTube → youtube-transcript-api（专门提取字幕，不受 yt-dlp PO Token 限制）
-B站     → yt-dlp 获取字幕 URL → 下载 VTT → 解析
+B站     → yt-dlp 获取字幕文件 → 解析 VTT/JSON → 提取片段
+
+返回 SubtitleData：
+  - plain_text: 纯文本（给 AI 分析用）
+  - segments:   [{start_time, end_time, text}, ...]（给前端展示用）
 """
 import asyncio
 import subprocess
@@ -10,14 +14,241 @@ import sys
 import os
 import tempfile
 import re
+import logging
+from dataclasses import dataclass, field
 from typing import Optional
+
 from config import YTDLP_PROXY, YTDLP_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 
 # 字幕语言优先级
 LANG_PRIORITY_YT = ["zh-Hans", "zh", "zh-TW", "en", "en-US"]
 LANG_PRIORITY_BILI = [r"zh-Hans", r"zh-CN", r"zh-TW", r"zh", r"en", r"en-US", r"en-GB"]
 
+
+@dataclass
+class SubtitleData:
+    """字幕提取结果：纯文本（AI用）+ 结构化片段（前端展示用）"""
+    plain_text: str
+    segments: list = field(default_factory=list)
+
+
+# ========== 工具函数 ==========
+
+def _timestamp_to_seconds(ts: str) -> float:
+    """将 VTT/SRT 时间戳 "HH:MM:SS.mmm" 或 "MM:SS.mmm" 转为浮点秒数"""
+    parts = ts.replace(',', '.').strip().split(':')
+    if len(parts) == 3:
+        return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+    elif len(parts) == 2:
+        return float(parts[0]) * 60 + float(parts[1])
+    return 0.0
+
+
+def _segments_to_plain_text(segments: list) -> str:
+    """将片段列表拼接为纯文本（空格分隔）"""
+    return " ".join(s.get("text", "") if isinstance(s, dict) else s.text for s in segments)
+
+
+# ========== VTT / SRT 解析（保留时间戳） ==========
+
+def _parse_vtt_segments(raw_text: str) -> list:
+    """
+    将 VTT/SRT 字幕内容解析为带时间戳的片段列表。
+
+    返回: [{"start_time": 1.0, "end_time": 4.5, "text": "大家好"}, ...]
+    """
+    lines = raw_text.split("\n")
+    segments = []
+    in_header = True
+    current_start = None
+    current_end = None
+    current_texts = []
+
+    # 时间戳正则（VTT 用 . 分隔毫秒，SRT 用 , 分隔）
+    ts_pattern = re.compile(
+        r"^(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})"
+    )
+
+    for line in lines:
+        stripped = line.strip()
+
+        # 跳过 WEBVTT 头部
+        if in_header:
+            if stripped in ("WEBVTT", "") or stripped.startswith(("Kind:", "Language:", "::")):
+                if stripped == "":
+                    in_header = False
+                continue
+            in_header = False
+
+        # 空行 → 可能表示一个字幕块的结束
+        if not stripped:
+            if current_start is not None and current_texts:
+                text = " ".join(current_texts)
+                text = re.sub(r"<[^>]+>", "", text)  # 去 HTML 标签
+                text = re.sub(r"</?c[^>]*>", "", text)
+                if text.strip():
+                    segments.append({
+                        "start_time": current_start,
+                        "end_time": current_end,
+                        "text": text.strip()
+                    })
+                current_start = None
+                current_end = None
+                current_texts = []
+            continue
+
+        # 时间戳行
+        m = ts_pattern.match(stripped)
+        if m:
+            # 保存上一个片段
+            if current_start is not None and current_texts:
+                text = " ".join(current_texts)
+                text = re.sub(r"<[^>]+>", "", text)
+                text = re.sub(r"</?c[^>]*>", "", text)
+                if text.strip():
+                    segments.append({
+                        "start_time": current_start,
+                        "end_time": current_end,
+                        "text": text.strip()
+                    })
+
+            current_start = _timestamp_to_seconds(m.group(1))
+            current_end = _timestamp_to_seconds(m.group(2))
+            current_texts = []
+            continue
+
+        # 跳过纯数字序号行（SRT）
+        if stripped.isdigit():
+            continue
+
+        # 跳过 cue settings
+        if stripped.startswith(("align:", "position:", "size:")):
+            continue
+
+        # 文本行
+        if current_start is not None:
+            cleaned = re.sub(r"<[^>]+>", "", stripped)
+            cleaned = re.sub(r"</?c[^>]*>", "", cleaned)
+            if cleaned:
+                current_texts.append(cleaned)
+
+    # 处理最后一个片段
+    if current_start is not None and current_texts:
+        text = " ".join(current_texts)
+        text = re.sub(r"<[^>]+>", "", text)
+        text = re.sub(r"</?c[^>]*>", "", text)
+        if text.strip():
+            segments.append({
+                "start_time": current_start,
+                "end_time": current_end,
+                "text": text.strip()
+            })
+
+    return segments
+
+
+# ========== B站 JSON 字幕解析（保留时间戳） ==========
+
+def _parse_bilibili_json_segments(filepath: str) -> list:
+    """
+    解析 B站 原生 JSON 字幕文件，返回带时间戳的片段列表。
+
+    B站字幕格式: [{"from": 1.0, "to": 3.5, "content": "你好"}, ...]
+    """
+    import json as _json
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+    except Exception:
+        return []
+
+    # 支持多种 JSON 结构
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        body = data.get("body") or data.get("subtitles") or data.get("data") or []
+        items = body if isinstance(body, list) else []
+    else:
+        return []
+
+    segments = []
+    for item in items:
+        if isinstance(item, dict):
+            content = (item.get("content") or item.get("text") or "").strip()
+            if content:
+                segments.append({
+                    "start_time": float(item.get("from", 0)),
+                    "end_time": float(item.get("to", 0)),
+                    "text": content
+                })
+
+    return segments
+
+
+# ========== yt-dlp 字幕下载（B站） ==========
+
+def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_dir: str) -> Optional[str]:
+    """
+    同步方法：用 yt-dlp --write-subs 下载 B站 字幕文件到 output_dir。
+
+    返回下载的字幕文件路径，无字幕时返回 None。
+    """
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--skip-download",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-format", "vtt/srt/ass/json",
+        "--sub-langs", "zh-Hans,zh-CN,zh-TW,zh,ai-zh,en",
+        "--no-playlist",
+        "--no-check-certificates",
+        "-o", os.path.join(output_dir, "%(title)s.%(ext)s"),
+        url
+    ]
+    if cookies_file:
+        cmd.extend(["--cookies", cookies_file])
+    if YTDLP_PROXY:
+        cmd.extend(["--proxy", YTDLP_PROXY])
+
+    logger.info(f"[B站字幕] 执行 yt-dlp 命令...")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT + 30)
+
+    logger.info(f"[B站字幕] yt-dlp returncode={result.returncode}")
+    if result.stderr:
+        stderr_tail = result.stderr.strip().split('\n')[-10:]
+        logger.info(f"[B站字幕] stderr (tail):\n{chr(10).join(stderr_tail)}")
+
+    all_files = os.listdir(output_dir)
+    logger.info(f"[B站字幕] 输出目录文件 ({len(all_files)} 个): {all_files}")
+
+    SUB_EXTENSIONS = ('.vtt', '.srt', '.ass', '.json')
+    sub_files = []
+    for fname in all_files:
+        if fname.endswith(SUB_EXTENSIONS):
+            sub_files.append(os.path.join(output_dir, fname))
+
+    if not sub_files:
+        logger.warning(f"[B站字幕] 未找到任何字幕文件")
+        return None
+
+    logger.info(f"[B站字幕] 找到 {len(sub_files)} 个字幕文件")
+
+    # 按语言优先级排序（中文优先）
+    def lang_priority(fpath: str) -> int:
+        name = os.path.basename(fpath).lower()
+        for i, lp in enumerate(LANG_PRIORITY_BILI):
+            if re.search(lp, name, re.IGNORECASE):
+                return i
+        return 99
+
+    sub_files.sort(key=lang_priority)
+    return sub_files[0]
+
+
+# ========== 平台字幕提取 ==========
 
 def _extract_video_id(url: str) -> Optional[str]:
     """从 YouTube URL 提取 video ID"""
@@ -33,8 +264,8 @@ def _extract_video_id(url: str) -> Optional[str]:
     return None
 
 
-async def _extract_youtube_subs(url: str) -> Optional[str]:
-    """用 youtube-transcript-api 提取 YouTube 字幕"""
+async def _extract_youtube_subs(url: str) -> Optional[SubtitleData]:
+    """用 youtube-transcript-api 提取 YouTube 字幕（保留时间戳）"""
     video_id = _extract_video_id(url)
     if not video_id:
         return None
@@ -45,126 +276,35 @@ async def _extract_youtube_subs(url: str) -> Optional[str]:
         transcript = await asyncio.to_thread(
             api.fetch, video_id, LANG_PRIORITY_YT
         )
-        # transcript 是一个可迭代对象（FetchedTranscript）
         snippets = list(transcript)
         if not snippets:
             return None
-        texts = [s.text for s in snippets if s.text.strip()]
-        return " ".join(texts)
+
+        segments = []
+        for s in snippets:
+            text = s.text.strip()
+            if text:
+                segments.append({
+                    "start_time": s.start,
+                    "end_time": s.start + s.duration,
+                    "text": text
+                })
+
+        if not segments:
+            return None
+
+        plain = _segments_to_plain_text(segments)
+        return SubtitleData(plain_text=plain, segments=segments)
+
     except Exception:
-        # youtube-transcript-api 可能因为各种原因失败（无字幕、被封等）
         return None
 
 
-def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_dir: str) -> Optional[str]:
+async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Optional[SubtitleData]:
     """
-    同步方法：用 yt-dlp --write-subs 下载 B站 字幕文件到 output_dir。
+    用 yt-dlp 下载 B站 字幕文件，解析为带时间戳的片段。
 
-    返回下载的字幕文件路径，无字幕时返回 None。
-    """
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "--skip-download",           # 不下载视频
-        "--write-subs",              # 下载手动字幕
-        "--write-auto-subs",         # 下载自动生成字幕
-        "--sub-format", "vtt",       # 要 VTT 格式
-        "--sub-langs", "zh-Hans,zh-CN,zh-TW,zh,ai-zh,en",
-        "--no-playlist",
-        "--no-check-certificates",
-        "-o", os.path.join(output_dir, "%(title)s.%(ext)s"),
-        url
-    ]
-    if cookies_file:
-        cmd.extend(["--cookies", cookies_file])
-    if YTDLP_PROXY:
-        cmd.extend(["--proxy", YTDLP_PROXY])
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT + 30)
-
-    # yt-dlp 返回非 0 也可能成功下载了字幕（视频格式不可用但字幕OK）
-    # 所以不检查 returncode，直接找字幕文件
-
-    # 在 output_dir 中找 .vtt 文件，按语言优先级排序
-    vtt_files = []
-    for fname in os.listdir(output_dir):
-        if fname.endswith(".vtt"):
-            fpath = os.path.join(output_dir, fname)
-            vtt_files.append(fpath)
-
-    if not vtt_files:
-        return None
-
-    # 按文件名中的语言优先级排序（中文优先）
-    def lang_priority(fpath: str) -> int:
-        name = os.path.basename(fpath).lower()
-        for i, lp in enumerate(LANG_PRIORITY_BILI):
-            if re.search(lp, name, re.IGNORECASE):
-                return i
-        return 99  # 未知语言排最后
-
-    vtt_files.sort(key=lang_priority)
-    return vtt_files[0]  # 返回优先级最高的
-
-
-def _parse_vtt(text: str) -> str:
-    """
-    将 VTT/SRT 字幕内容解析为纯文本。
-    去掉：WEBVTT 头部、时间戳、HTML 标签、序号、空行。
-    """
-    lines = text.split("\n")
-    result = []
-    in_header = True
-    seen = set()
-
-    for line in lines:
-        stripped = line.strip()
-
-        # 跳过 WEBVTT 头部
-        if in_header:
-            if stripped == "WEBVTT" or stripped.startswith("Kind:") or stripped.startswith("Language:"):
-                continue
-            if stripped == "":
-                in_header = False
-                continue
-            if stripped.startswith("::"):
-                continue
-
-        # 跳过空行
-        if not stripped:
-            continue
-
-        # 跳过时间戳行
-        if re.match(r"^\d{2}:\d{2}:\d{2}[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}", stripped):
-            continue
-
-        # 跳过纯数字序号行
-        if stripped.isdigit():
-            continue
-
-        # 去掉 HTML 标签和 VTT 标签
-        cleaned = re.sub(r"<[^>]+>", "", stripped)
-        cleaned = re.sub(r"</?c[^>]*>", "", cleaned)
-
-        # 跳过 cue settings 行
-        if cleaned.startswith("align:") or cleaned.startswith("position:") or cleaned.startswith("size:"):
-            continue
-
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            result.append(cleaned)
-
-    return " ".join(result)
-
-
-async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Optional[str]:
-    """
-    用 yt-dlp 下载 B站 字幕（--write-subs + --write-auto-subs）。
-
-    流程：
-    1. 创建临时目录
-    2. yt-dlp 下载字幕 .vtt 文件到临时目录
-    3. 读取并解析 VTT → 纯文本
-    4. 清理临时目录和 cookies 文件
+    返回 SubtitleData（plain_text + segments），失败时返回 None。
     """
     cookies_file = None
     if cookies:
@@ -178,56 +318,69 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
     output_dir = tempfile.mkdtemp(prefix="bili_subs_")
 
     try:
-        # 同步下载字幕（在线程池中执行，不阻塞事件循环）
-        vtt_path = await asyncio.to_thread(
+        sub_path = await asyncio.to_thread(
             _download_bilibili_subs_sync, url, cookies_file, output_dir
         )
 
-        if not vtt_path:
+        if not sub_path:
             return None
 
-        # 读取 VTT 文件
-        with open(vtt_path, "r", encoding="utf-8") as f:
-            raw_text = f.read()
+        logger.info(f"[B站字幕] 选中文件: {sub_path}")
 
-        plain = _parse_vtt(raw_text)
-        if not plain or len(plain) < 10:
+        # 根据扩展名选择解析器
+        if sub_path.endswith('.json'):
+            segments = _parse_bilibili_json_segments(sub_path)
+        else:
+            with open(sub_path, "r", encoding="utf-8") as f:
+                raw_text = f.read()
+            segments = _parse_vtt_segments(raw_text)
+
+        if not segments:
+            logger.warning(f"[B站字幕] 解析出 0 个片段")
             return None
 
-        return plain
+        plain = _segments_to_plain_text(segments)
+        if len(plain) < 10:
+            logger.warning(f"[B站字幕] 纯文本太短 ({len(plain)} 字)")
+            return None
 
-    except Exception:
-        # yt-dlp 执行失败或字幕下载失败 → 当作无字幕处理
+        logger.info(f"[B站字幕] 成功提取 {len(segments)} 片段，{len(plain)} 字")
+        return SubtitleData(plain_text=plain, segments=segments)
+
+    except Exception as e:
+        logger.warning(f"[B站字幕] 提取过程异常: {type(e).__name__}: {e}")
         return None
 
     finally:
-        # 清理 cookies 临时文件
         if cookies_file and os.path.exists(cookies_file):
             os.unlink(cookies_file)
-        # 清理字幕临时目录
         import shutil
         if os.path.exists(output_dir):
             shutil.rmtree(output_dir, ignore_errors=True)
 
 
+# ========== 公共入口 ==========
+
 async def extract_subtitle_text(
     url: str,
     cookies: Optional[str] = None,
-) -> Optional[str]:
+) -> Optional[SubtitleData]:
     """
-    提取视频字幕的纯文本，自动根据平台选择最佳方式。
+    提取视频字幕，自动根据平台选择最佳方式。
 
     - YouTube → youtube-transcript-api（专用字幕库）
-    - B站 → yt-dlp（下载 + 解析 VTT）
+    - B站 → yt-dlp（下载 + 解析）
 
-    返回字幕文本，无字幕时返回 None。
+    返回 SubtitleData：
+      - plain_text: 纯文本，空格分隔，给 AI 分析用
+      - segments: [{start_time, end_time, text}, ...]，给前端展示用
+
+    无字幕时返回 None。
     """
-    # 判断平台
     if re.search(r"youtube\.com|youtu\.be", url, re.IGNORECASE):
         return await _extract_youtube_subs(url)
 
     if re.search(r"bilibili\.com|b23\.tv", url, re.IGNORECASE):
         return await _extract_bilibili_subs(url, cookies)
 
-    # 其他平台暂不支持字幕
     return None

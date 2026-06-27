@@ -1,8 +1,16 @@
 """
 FastAPI 应用入口
 """
+import logging
 from dotenv import load_dotenv
 load_dotenv()  # 加载 .env 中的环境变量
+
+# 配置日志 — 方便调试
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

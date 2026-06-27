@@ -7,9 +7,10 @@ import subprocess
 import re
 import sys
 import os
+import shutil
 import tempfile
 from typing import Optional
-from config import YTDLP_PROXY, YTDLP_TIMEOUT
+from config import YTDLP_PROXY, YTDLP_TIMEOUT, DOWNLOAD_TIMEOUT
 from models.schemas import ParseResponse, FormatInfo
 
 
@@ -106,6 +107,10 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
             url
         ]
 
+        # YouTube: 用 Android 客户端绕过 SABR 流式拦截
+        if platform == "youtube":
+            cmd.extend(["--extractor-args", "youtube:player_client=android"])
+
         # 有 cookies 文件时传入
         if cookies_file:
             cmd.extend(["--cookies", cookies_file])
@@ -180,43 +185,231 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
 def _extract_formats(raw_formats: list) -> list[FormatInfo]:
     """
-    从 yt-dlp 的原始格式列表中提取用户可选的清晰度。
+    从 yt-dlp 原始格式中提取可选分辨率。
 
-    规则：
-    - 只要视频+音频合并的格式（有 video_ext 且有 audio_ext）
-    - 同一个分辨率只留一个（取文件体积最小的）
-    - 最多展示 6 个选项
+    不做复杂的格式筛选 — 只收集所有视频分辨率，
+    下载时 yt-dlp 自己用 bestvideo[height<=X]+bestaudio 选最优流。
     """
-    merged = []
-
+    # 按分辨率分组，收集每个分辨率下的最佳格式信息
+    best_per_height = {}
     for f in raw_formats:
-        # 过滤：有视频、有音频、有分辨率信息
+        h = f.get("height")
         vcodec = f.get("vcodec", "none")
-        acodec = f.get("acodec", "none")
-        height = f.get("height")
-
-        if vcodec == "none" or acodec == "none" or not height:
+        if not h or vcodec == "none":
             continue
 
-        resolution = f"{height}p"
-        filesize = f.get("filesize") or f.get("filesize_approx")
+        size = f.get("filesize") or f.get("filesize_approx")
+        # 优先 H.264（与下载时的 --format-sort vcodec:avc 一致）
+        is_avc = (f.get("vcodec") or "").startswith("avc")
 
-        merged.append(FormatInfo(
-            format_id=f["format_id"],
-            resolution=resolution,
-            filesize=filesize,
-            ext=f.get("ext", "mp4")
-        ))
+        if h not in best_per_height:
+            best_per_height[h] = (is_avc, size, f.get("ext", "mp4"))
+        else:
+            prev_avc, prev_size, prev_ext = best_per_height[h]
+            # H.264 优先，同等编码选体积小的（更可能是真实文件大小）
+            if is_avc and not prev_avc:
+                best_per_height[h] = (is_avc, size, f.get("ext", "mp4"))
+            elif is_avc == prev_avc:
+                if prev_size is None or (size is not None and size < prev_size):
+                    best_per_height[h] = (is_avc, size, f.get("ext", "mp4"))
 
-    # 去重：同一个分辨率只留一个
-    seen_resolution = set()
-    unique = []
-    for f in merged:
-        if f.resolution not in seen_resolution:
-            seen_resolution.add(f.resolution)
-            unique.append(f)
+    if not best_per_height:
+        return []
 
-    # 按分辨率从高到低排序
-    unique.sort(key=lambda x: int(x.resolution.replace("p", "")), reverse=True)
+    # 从高到低排序，最多 8 档
+    sorted_heights = sorted(best_per_height.keys(), reverse=True)[:8]
 
-    return unique[:6]
+    return [
+        FormatInfo(
+            format_id=f"{h}p",
+            resolution=f"{h}p",
+            filesize=best_per_height[h][1],  # 预估值
+            ext=best_per_height[h][2],
+            has_audio=True,
+        )
+        for h in sorted_heights
+    ]
+
+
+def _extract_download_error(stderr_bytes: bytes) -> str:
+    """
+    从 yt-dlp 的 stderr 输出中提取真正的错误信息。
+    过滤掉 Python 版本警告、urllib3 警告等噪音，取最后 500 字（错误在末尾）。
+    """
+    lines = stderr_bytes.decode("utf-8", errors="replace").split("\n")
+    clean_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "NotOpenSSLWarning" in stripped:
+            continue
+        if "Deprecated Feature:" in stripped:
+            continue
+        if "warnings.warn(" in stripped:
+            continue
+        if stripped.startswith("[download]") and "%" in stripped:
+            continue
+        clean_lines.append(stripped)
+
+    result = "\n".join(clean_lines)
+    # 错误信息在末尾，取最后 500 字
+    if len(result) > 500:
+        result = "..." + result[-500:]
+    return result if result else "未知错误"
+
+
+def _sanitize_filename(name: str) -> str:
+    """把文件名中的非法字符替换为下划线"""
+    return re.sub(r'[<>:"/\\|?*]', '_', name).strip() or "video"
+
+
+async def _get_download_filename(
+    url: str, format_id: str, cookies_file: Optional[str] = None, platform: str = "unsupported"
+) -> str:
+    """
+    查询 yt-dlp 会输出什么文件名。
+    跑一次 --print filename（只查询元数据，不下载），拿到文件名后返回。
+    失败时返回 "video.mp4" 兜底。
+    """
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--print", "filename",
+        "-f", format_id,
+        "--no-playlist",
+        "--no-check-certificates",
+        url
+    ]
+    if platform == "youtube":
+        cmd.extend(["--extractor-args", "youtube:player_client=android"])
+    if cookies_file:
+        cmd.extend(["--cookies", cookies_file])
+    if YTDLP_PROXY:
+        cmd.extend(["--proxy", YTDLP_PROXY])
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=YTDLP_TIMEOUT)
+        if process.returncode == 0 and stdout:
+            name = stdout.decode("utf-8", errors="replace").strip()
+            if name:
+                return _sanitize_filename(name)
+    except Exception:
+        pass
+
+    return "video.mp4"
+
+
+async def download_video(
+    url: str,
+    format_id: str = "best",
+    cookies: Optional[str] = None,
+    has_audio: bool = True,
+):
+    """
+    下载视频到临时文件。
+
+    流程：
+    1. 构建格式选择器 + 文件名查询
+    2. yt-dlp 下载到临时目录 → 成功后才返回
+    3. 返回 (filepath, filename, temp_dir) 供路由层用 FileResponse 发送
+
+    简单可靠：yt-dlp 自己处理 cookies / ffmpeg / 风控，后端不插手。
+    """
+    platform = identify_platform(url)
+
+    # -- 1. 格式选择器（yt-dlp 原生语法）--
+    # format_id 现在是分辨率字符串如 "1080p"，不是原始 format_id
+    height_str = format_id.lower().replace("p", "").strip()
+    if height_str == "best" or not height_str:
+        format_selector = "bestvideo+bestaudio/best"
+    else:
+        try:
+            height = int(height_str)
+            format_selector = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
+        except ValueError:
+            format_selector = "bestvideo+bestaudio/best"
+
+    # -- 2. cookies 临时文件（整次下载共用一份）--
+    cookies_file = None
+    if cookies:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        )
+        tmp.write(cookies)
+        tmp.close()
+        cookies_file = tmp.name
+
+    temp_dir = None
+    try:
+        # -- 3. 查询 yt-dlp 会输出的文件名 --
+        filename = await _get_download_filename(url, format_selector, cookies_file, platform)
+
+        # -- 4. 创建临时目录，下载到那里 --
+        temp_dir = tempfile.mkdtemp(prefix="ytdlp_dl_")
+        output_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
+
+        cmd = [
+            sys.executable, "-m", "yt_dlp",
+            "-f", format_selector,
+            "-o", output_template,
+            "--format-sort", "vcodec:avc",  # 优先 H.264（兼容性好），没有时自动降级
+            "--no-playlist",
+            "--no-check-certificates",
+            url,
+        ]
+        # YouTube: 用 Android 客户端绕过 SABR 流式拦截
+        # ref: https://github.com/yt-dlp/yt-dlp/issues/12482
+        if platform == "youtube":
+            cmd.extend(["--extractor-args", "youtube:player_client=android"])
+        if cookies_file:
+            cmd.extend(["--cookies", cookies_file])
+        if YTDLP_PROXY:
+            cmd.extend(["--proxy", YTDLP_PROXY])
+
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        # 等 yt-dlp 完整下载完成（大文件需要时间）
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=DOWNLOAD_TIMEOUT
+        )
+
+        if process.returncode != 0:
+            error_text = _extract_download_error(stderr)
+            raise RuntimeError(f"下载失败：{error_text}")
+
+        # -- 5. 找到下载好的文件 --
+        files = os.listdir(temp_dir)
+        if not files:
+            raise RuntimeError("下载完成但未找到输出文件")
+
+        filepath = os.path.join(temp_dir, files[0])
+        filename = os.path.basename(filepath)  # 用实际输出的文件名
+
+        return filepath, filename, temp_dir
+
+    except RuntimeError:
+        # 下载失败 → 清理临时目录
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+    except asyncio.TimeoutError:
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise RuntimeError(f"下载超时（超过 {DOWNLOAD_TIMEOUT} 秒），文件可能过大或网络较慢")
+    except Exception as e:
+        if temp_dir and os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise RuntimeError(f"下载异常：{str(e)}")
+    finally:
+        # cookies 用完即删
+        if cookies_file and os.path.exists(cookies_file):
+            os.unlink(cookies_file)

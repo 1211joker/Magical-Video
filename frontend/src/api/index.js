@@ -96,9 +96,59 @@ export function startAnalysis(url, cookies, onEvent, onError) {
 }
 
 /**
- * 触发视频下载
+ * 下载视频 — POST 请求后端代理下载，接收 Blob 流后触发浏览器保存。
+ *
+ * 参数：
+ *   url       - 视频链接
+ *   formatId  - 清晰度 format_id（如 "137+140"）
+ *   cookies   - B站 cookies（可选）
+ *   hasAudio  - 格式是否已包含音频（纯视频流为 false）
+ *
+ * 返回：
+ *   { success: true, filename: string }
+ *
+ * 抛出：
+ *   Error — 下载失败时，message 为错误描述
  */
-export function downloadVideo(url, formatId = 'best') {
-  const downloadUrl = `${API_BASE}/download?url=${encodeURIComponent(url)}&format_id=${formatId}`
-  window.open(downloadUrl, '_blank')
+export async function downloadVideo(url, formatId, cookies, hasAudio = true) {
+  const response = await fetch(`${API_BASE}/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, format_id: formatId, cookies, has_audio: hasAudio })
+  })
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: '下载失败，请重试' }))
+    throw new Error(err.detail || '下载失败，请重试')
+  }
+
+  try {
+    // 从响应头提取文件名
+    const disposition = response.headers.get('Content-Disposition') || ''
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/)
+    const normalMatch = disposition.match(/filename="?(.+?)"?\s*(;|$)/)
+    let filename = 'video.mp4'
+    if (utf8Match) {
+      filename = decodeURIComponent(utf8Match[1])
+    } else if (normalMatch) {
+      filename = normalMatch[1]
+    }
+
+    // 读取整个响应体为 Blob
+    const blob = await response.blob()
+
+    // 触发浏览器"另存为"
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
+
+    return { success: true, filename }
+  } catch (e) {
+    throw new Error('下载失败：网络异常或文件损坏')
+  }
 }

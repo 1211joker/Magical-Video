@@ -49,8 +49,12 @@
     │   ├── App.vue          ← 主页面（链接输入框 + 结果区）
     │   ├── api/index.js     ← API 请求封装
     │   ├── components/      ← 组件目录
-    │   │   ├── VideoInfo.vue    ← 视频信息卡片
-    │   │   └── CookieGuide.vue  ← B站 Cookies 引导
+    │   │   ├── VideoInfo.vue       ← 视频信息卡片
+    │   │   ├── CookieGuide.vue     ← B站 Cookies 引导
+    │   │   ├── AnalysisResult.vue  ← AI 分析结果（选项卡布局）
+    │   │   ├── DownloadSection.vue ← 清晰度选择 + 下载按钮
+    │   │   ├── MindMap.vue         ← markmap 思维导图
+    │   │   └── SubtitleViewer.vue  ← 带时间戳的字幕展示
     │   └── styles/main.css  ← 全局样式
     └── vite.config.js       ← Vite 配置（含代理）
 ```
@@ -111,35 +115,55 @@
 
 **做了什么**：
 - 后端新建了 `subtitle_service.py`（字幕提取服务）：
-  - 从 yt-dlp dump-json 中获取字幕 URL
+  - YouTube：`youtube-transcript-api` 专用库提取
+  - B站：yt-dlp `--write-subs` 下载 VTT/JSON 文件 → 本地解析
   - 按优先级选最佳字幕：中文手动 → 英文手动 → 中文自动 → 英文自动
-  - 下载 VTT/SRT 字幕文件 → 解析为纯文本（去掉时间戳、HTML标签、序号）
+  - 支持多种字幕格式：VTT、SRT、ASS、B站原生 JSON
 - 后端新建了 `deepseek_service.py`（AI 分析服务）：
-  - 调用 DeepSeek chat API，传入字幕文本
-  - 自定义系统提示词，要求 AI 返回结构化 JSON（摘要 + 关键要点 + 思维导图）
+  - 调用 DeepSeek chat API（`deepseek-v4-flash`），传入字幕文本
+  - 思维导图优先的四维度分析：概述 + 大纲 + 要点 + 总结 + 思维导图
+  - 要点附带原文证据引用（`evidence` 字段），可溯源验证
+  - 智能截断：25,000 字上下文，首 20% + 中 60% + 尾 20%（覆盖视频全程）
+  - 输出限制 10,000 tokens，思维导图独占约 5,000 tokens 空间
+  - 思维导图要求：5-7 个一级分支、4 层深度、30+ 节点、每节点含具体信息
   - 处理各种异常：Key 无效、余额不足、API 限流、JSON 解析失败
-  - 字幕过长时智能截断（取前 60% + 后 20%）
 - 后端新增 `POST /api/analyze-stream` SSE 端点：
   - 实时推送分析进度（parse → subtitles → analyze）
   - 每步有 processing/done/failed 状态 + 中文描述
   - 使用 fetch + ReadableStream 方式（非 EventSource），支持 POST 传递 cookies
-- 前端新建了 `AnalysisResult.vue` 组件：
-  - 📝 核心摘要卡片 — 2-3 句话总结
-  - 🔑 关键要点列表 — 编号圆点 + 卡片样式 + 交错淡入动画
-  - 🧠 思维导图占位预览 — 分支节点 + 标签云（模块 4 升级为交互式 markmap）
+  - 最终事件携带完整四维度结果 + 字幕时间戳片段
+- 前端新建了 `AnalysisResult.vue` 组件（选项卡布局）：
+  - 📝 概述 — 2-3 句概括视频核心内容
+  - 📋 大纲 — 时间线 + 段落主题 + 详细内容
+  - 🔑 要点 — 编号卡片 + 原文证据引用（blockquote 样式）
+  - 💡 总结 — 可执行结论（绿色卡片）
+  - 🧠 思维导图 — markmap 交互式 SVG，可缩放展开，支持 SVG 下载
+  - 💬 字幕 — 原始字幕列表，每条显示 MM:SS 时间戳
+- 前端新建了 `SubtitleViewer.vue` 组件：
+  - 带时间戳徽章的可滚动字幕列表
+  - 交替行背景色，便于阅读
+  - 空状态友好提示
+- 前端新建了 `MindMap.vue` 组件：
+  - markmap 真实渲染（交互式 SVG）
+  - SVG `<svg>` 容器确保正确的 SVG 命名空间
+  - 「⬇️ 下载思维导图」按钮，导出带白底的 SVG 文件
 - 前端 App.vue 新增分析流程：
   - 解析成功后显示「🤖 AI 分析视频内容」虚线按钮
   - 分析中展示三步进度条（⏳/✅/❌ 状态 + 实时消息）
-  - 分析完成自动展示 AnalysisResult 组件
+  - 完成时标题显示「✅ AI 分析完成」，失败时显示「AI 分析未完成」+ 重试按钮
   - 支持取消分析（组件卸载时自动 abort）
 
 **新增文件**：
-- `backend/services/subtitle_service.py` — 字幕提取与解析
+- `backend/services/subtitle_service.py` — 字幕提取与解析（含时间戳保留）
 - `backend/services/deepseek_service.py` — DeepSeek API 封装
-- `frontend/src/components/AnalysisResult.vue` — 分析结果展示组件
+- `frontend/src/components/AnalysisResult.vue` — 选项卡式分析结果展示
+- `frontend/src/components/MindMap.vue` — markmap 思维导图渲染
+- `frontend/src/components/SubtitleViewer.vue` — 带时间戳的字幕查看器
 
 **修改文件**：
+- `backend/models/schemas.py` — 新增 SubtitleSegment / OutlineItem / KeyPoint / ConclusionItem 模型，重构 AnalysisResult
 - `backend/routers/analyze.py` — 新增 `POST /api/analyze-stream` SSE 端点
+- `backend/config.py` — AI_ANALYSIS_TIMEOUT 30s → 90s
 - `frontend/src/api/index.js` — 新增 `startAnalysis()`（fetch + ReadableStream SSE）
 - `frontend/src/App.vue` — 新增分析按钮 + 进度展示 + 结果展示逻辑
 
@@ -147,20 +171,143 @@
 
 | 测试场景 | 结果 |
 |----------|------|
-| 后端 Python 导入检查 | ✅ 3 个新模块全部正常导入 |
-| 前端构建 | ✅ 20 个模块编译通过，171ms |
+| 后端 Python 导入检查 | ✅ 全部模型和服务正常导入 |
+| 前端构建 | ✅ 746 模块编译通过，305ms |
 | 前后端服务心跳 | ✅ 后端 8000 / 前端 5173 均正常响应 |
-| 完整 AI 分析链路 | ✅ 解析 → 字幕(1494字) → deepseek-v4-flash 分析 → 返回结构化结果 |
-| 思维导图渲染 | ✅ markmap 交互式 SVG，支持下载 |
+| 完整 AI 分析链路 | ✅ 解析 → 字幕提取 → deepseek-v4-flash 四维度分析 → 结构化结果 |
+| 思维导图渲染 | ✅ markmap 交互式 SVG（官方 `<svg>` 容器），支持下载 |
+| 选项卡切换 | ✅ 六选项卡（概述/大纲/要点/总结/思维导图/字幕）正常切换 |
+| 字幕时间戳 | ✅ MM:SS 格式徽章，VTT/JSON 时间戳完整保留 |
+| B站字幕提取 | ✅ --write-subs 直接下载 + 多格式解析（VTT/SRT/ASS/JSON） |
 
-**2026-06-27 改进**：
-- DeepSeek 模型改为 `deepseek-v4-flash`（更快更省 token）
-- 思维导图用 `markmap` 真实渲染（交互式 SVG，可缩放展开）
-- 新增「⬇️ 下载思维导图」按钮，导出 SVG 文件
+### ✅ 模块 4：视频下载（已完成 — 2026-06-28）
 
-### 🔲 模块 4：结果展示（摘要 + 要点 + 思维导图）
+**做了什么**：
+- 后端实现了 `POST /api/download` 缓存下载端点：
+  - yt-dlp 下载视频到临时目录 → 完整下载后 `FileResponse` 发给浏览器 → 自动清理
+  - 流式代理（yt-dlp→stdout→StreamingResponse）因 B站 风控/SSL/ffmpeg 等多种问题被废弃
+  - 缓存模式：yt-dlp 自己搞定一切（cookies/ffmpeg/风控），后端只做封装，成功才返回
+- **核心改进 — yt-dlp 原生格式选择器**：
+  - 不再使用原始 `format_id`（如 "100022"），改用 `bestvideo[height<=1080]+bestaudio/best[height<=1080]`
+  - yt-dlp 自己决定用哪个流、如何合并，后端只传分辨率字符串（如 "720p"）
+  - 添加 `--format-sort vcodec:avc` 优先 H.264 编码（兼容性好），避免 AV1 在某些播放器中"有声音无画面"
+  - 下载超时设为 600 秒（10 分钟），适应大文件
+- 前端 `DownloadSection.vue` 组件：
+  - 清晰度选择器：radio 按钮列表，显示分辨率 / 预估文件大小 / 扩展名
+  - 默认选中最高画质，`formats` 变化时自动重置
+  - 下载按钮：正常态 / 下载中（spinner + 禁用）/ 成功绿色 / 失败红色
+  - 下载完成 3 秒后自动恢复按钮状态
+- 前端 `downloadVideo()` API 函数：POST + fetch + Blob + `<a download>` 触发保存
 
-### 🔲 模块 5：视频下载 + 样式打磨
+**架构演进（三轮迭代）**：
+| 版本 | 模式 | 问题 |
+|------|------|------|
+| v1 流式代理 | yt-dlp→stdout→Python逐块读→StreamingResponse | 中途错误 → 连接断裂 → 500；stderr 缓冲区死锁 |
+| v2 缓存 + raw format_id | 临时文件 + FileResponse | B站 format_id 不准确 → "只有声音没视频" |
+| v3 缓存 + 原生选择器 | 临时文件 + `bestvideo[height<=X]+bestaudio` | ✅ 稳定可靠 |
+
+**新增/修改文件**：
+- `backend/services/ytdlp_service.py` — `download_video()` 重写为缓存模式；`_extract_formats()` 简化为分辨率收集 + 文件大小预估
+- `backend/routers/download.py` — `StreamingResponse` → `FileResponse` + `BackgroundTasks` 清理
+- `backend/config.py` — 新增 `DOWNLOAD_TIMEOUT=600`；移除废弃的 `DOWNLOAD_CHUNK_SIZE`、`MAX_FILE_SIZE`
+- `frontend/src/components/DownloadSection.vue` — 移除 `has_audio` 逻辑（原生选择器始终含音频）
+- `frontend/src/api/index.js` — 简化 `downloadVideo()` 参数
+
+**验证结果**：
+
+| 测试场景 | 结果 |
+|----------|------|
+| 后端导入链 | ✅ 全部正常导入 |
+| 前端构建 | ✅ 编译通过 |
+| B站 下载（360p） | ✅ 200 OK，8.1MB，4s，H.264+AAC 双轨 |
+| B站 下载（720p） | ✅ 200 OK，视频+音频完整 |
+| 格式选择器 | ✅ `bestvideo[height<=720]+bestaudio/best[height<=720]` 正确合并 |
+| 中文文件名 | ✅ FileResponse 自动 UTF-8 编码，不再 latin-1 报错 |
+| 错误处理 | ✅ 下载失败返回 400 JSON（非 500） |
+| Cookies 未留存 | ✅ 临时文件用完即删 |
+
+### ✅ 模块 5：样式打磨（已完成 — 2026-06-28）
+
+**做了什么**：基于 ui-ux-pro-max skill 的设计系统审查，对前端进行全面 UI/UX 打磨。
+
+**六大优先级**：
+
+- **P1 响应式设计**：
+  - 系统化断点：375px（极小屏）→ 640px（手机）→ 768px（平板）→ 1024px（桌面）
+  - 移动端：输入区 flex 列布局、按钮全宽、卡片内边距自适应
+  - 触控友好：所有按钮/标签 `min-height: 48px`，符合 Apple HIG 44pt 最低要求
+- **P2 暗色模式**：
+  - `[data-theme="dark"]` 完整 CSS 变量覆盖（取自 Developer Tool 调色板）
+  - 跟随系统 `prefers-color-scheme: dark` 自动切换
+  - 手动切换按钮（🌙/☀️），localStorage 持久化偏好
+  - 支持 `[data-theme="light"]` 强制浅色模式
+- **P3 过渡动画**：
+  - Vue `<Transition name="fade/slide-fade">` 包裹错误横幅、视频信息、分析结果
+  - 选项卡切换：`<Transition mode="out-in" name="tab">` 带方向性动画
+  - 骨架屏加载态：解析中显示 `skeleton` 卡片（shimmer 动画）
+  - `@media (prefers-reduced-motion: reduce)` 全局禁用动画
+- **P4 视觉细节**：
+  - 斑马纹对比度修复：字幕偶数列改用 `var(--bg-input)` 替代 `#f0f1f3`
+  - AI 分析按钮：虚线边框 → 实线边框 + hover 提亮，降低"未完成"感
+  - 思维导图：500px 固定高度 → `getBBox()` 动态计算实际高度
+  - emoji→SVG：全部功能图标（选项卡、按钮、进度步骤）替换为 Feather 风格 SVG
+  - 状态颜色语义化：success/danger/warning/info 使用 CSS 变量 token
+- **P5 代码清理**：
+  - 删除孤立 `frontend/src/style.css`（Vite 脚手架残留，含未使用的暗色代码）
+  - `index.html`：`lang="en"`→`"zh-CN"`、标题→"AI 视频下载总结器"、新增 description meta
+  - 新增 `theme-color` meta 标签（浅色 #f8f9fa / 暗色 #0F172A）
+- **P6 无障碍**：
+  - `:focus-visible` 全局样式：2px accent 色轮廓 + 2px offset
+  - 跳过链接 `.skip-link`：Tab 键后出现，直达 `#main-content`
+  - ARIA 属性：`role="tab/tablist/tabpanel/alert/list/listitem"`、`aria-label`、`aria-selected`
+  - 键盘导航：Tab 顺序与视觉顺序一致
+
+**修改文件**：
+- `frontend/index.html` — 标题/语言/meta/viewport
+- `frontend/src/styles/main.css` — 全面重写（~280 行 → ~370 行）
+- `frontend/src/App.vue` — 主题切换/跳过链接/SVG 图标/Transition/骨架屏
+- `frontend/src/components/AnalysisResult.vue` — emoji→SVG/Tab Transition/暗色适配
+- `frontend/src/components/SubtitleViewer.vue` — 对比度修复/暗色适配
+- `frontend/src/components/MindMap.vue` — 动态高度/暗色适配
+- `frontend/src/components/VideoInfo.vue` — 硬编码颜色→CSS 变量
+- `frontend/src/components/CookieGuide.vue` — 硬编码颜色→CSS 变量
+- `frontend/src/style.css` — **已删除**（孤立文件）
+
+**验证结果**：
+
+| 测试场景 | 结果 |
+|----------|------|
+| 前端构建 | ✅ 748 模块，26KB CSS + 771KB JS，311ms |
+| 暗色模式切换 | ✅ 手动切换 + 系统自动 + 持久化均正常 |
+| 响应式布局 | ✅ 4 个断点，组件在 375px 窄屏正常重排 |
+| SVG 图标渲染 | ✅ 全部 Feather 风格内联 SVG 正常显示 |
+| Vue Transition 动画 | ✅ fade/slide-fade/tab 三类过渡正常 |
+| 骨架屏 | ✅ 解析中 shimmer 动画卡片正常 |
+| 无障碍 | ✅ Tab 焦点可见、skip link 可用、aria 完整 |
+| 减动偏好 | ✅ `prefers-reduced-motion` 禁用所有动画 |
+| 向后兼容 | ✅ 后端 0 改动，所有 API 接口无变化 |
+
+---
+
+### 🔲 模块 6：未来规划
+
+---
+
+## ⚙️ AI 分析参数调优历史
+
+思维导图经历了三轮优化，从"泛泛而谈"到"知识树"：
+
+| 轮次 | 上下文 | max_tokens | 导图深度 | 节点要求 | 效果 |
+|------|--------|-----------|---------|---------|------|
+| 初版 | 8,000 | 2,000 | 无要求 | 无要求 | 只有 2 层，"大类A""具体点1"这种占位符 |
+| 第一轮 | 15,000 | 4,000→6,000 | 3 层 | ≥20 节点 | 深度增加但内容仍然泛泛 |
+| 第二轮 | **25,000** | **10,000** | **4 层** | **≥30 节点** | 每节点要求具体信息（数字/术语/案例名） |
+
+核心发现：
+- 上下文不足 → AI 看不到细节 → 无法输出细节。从 8K 提到 25K 是关键
+- token 不够 → 概述+大纲+要点把 token 占完 → 导图被截断。提到 10K 后导图有独立空间
+- 提示词示例不能是"A""B""1""2"占位符 → AI 照猫画虎。改用真实知识点示范（"过拟合定义→训练99%测试85%"）
+- 思维导图必须标注为 **"最重要的输出"**，并加上"宁可少写大纲也要保证导图完整"
 
 ---
 
@@ -268,9 +415,128 @@ cmd = [sys.executable, "-m", "yt_dlp", ...]
 **原因**：和坑 5 类似，`--dump-json` 虽然能拿到视频元数据，但 `subtitles` / `automatic_captions` 字段为空，字幕 URL 无法通过 JSON 方式获取。
 
 **解决**：放弃 `--dump-json → 取 URL → httpx 下载` 的间接路线，改用 yt-dlp 直接下载字幕文件：
-- `--write-subs --write-auto-subs --sub-langs "zh-Hans,zh-CN,zh-TW,zh,ai-zh,en" --skip-download`
-- 字幕 .vtt 文件下载到临时目录 → 按中文优先排序选最佳 → 读取解析 → 清理临时目录
+- `--write-subs --write-auto-subs --sub-langs "..." --skip-download`
+- 字幕文件下载到临时目录 → 按中文优先排序选最佳 → 读取解析 → 清理临时目录
+- 支持多格式：VTT、SRT、ASS、B站原生 JSON
 
 ---
 
-*最后更新：2026-06-27 完成模块 1 + 2 + 2.5 + 3*
+### 坑 8：思维导图不渲染 — SVG 命名空间问题
+
+**现象**：思维导图组件不显示任何内容，无报错。
+
+**原因**：markmap 的 `Markmap.create()` 内部调用 `d3.select(container).append("g")`。当容器是 `<div>` 时，d3 在 HTML 命名空间创建 `<g>` 元素，浏览器将其当作未知 HTML 元素而忽略，SVG 内容全部不渲染。markmap 官方文档明确要求容器必须是 `<svg>` 元素。
+
+**解决**：
+1. 容器从 `<div ref="svgContainer">` 改为 `<svg ref="svgContainer" width="100%" height="500">`
+2. 导入从 `import * as markmap` 改为 `import { Markmap }`（命名导入）
+3. `downloadSVG()` 函数适配：容器本身即为 SVG 元素
+
+---
+
+### 坑 9：进度条标题与实际状态不一致
+
+**现象**：AI 分析顺利完成，所有步骤显示 ✅，但标题显示"AI 分析未完成"。
+
+**原因**：标题逻辑仅根据 `analyzing` 布尔值判断 — 成功完成后 `analyzing = false`，触发"未完成"文本。
+
+**解决**：改为根据步骤实际状态计算：
+- 进行中 → "AI 分析进行中..."
+- 全部 ✅ → "✅ AI 分析完成"
+- 有 ❌ → "AI 分析未完成" + 重试按钮
+
+---
+
+### 坑 10：思维导图内容太"泛" — AI 输出细节不足
+
+**现象**：思维导图只有 2 层结构，节点内容空洞（"介绍""总结""分析"），缺少视频中提到的具体知识点。
+
+**原因**（三个叠加）：
+1. **上下文太少**：字幕截断 8,000 字，AI 看不到足够多的视频内容，自然提炼不出细节
+2. **token 空间不够**：概述+大纲+要点+总结把 4,000 tokens 基本占满，轮到思维导图时空间所剩无几
+3. **提示词太弱**：示例用"A""B""1""2"占位符，AI 照猫画虎；没有明确的节点数量和深度要求
+
+**解决**（三轮迭代）：
+- 上下文：8,000 → 15,000 → **25,000** 字
+- max_tokens：2,000 → 4,000 → 6,000 → **10,000**
+- 提示词改为思维导图优先：要求 5-7 个一级分支、4 层深度、30+ 节点
+- 示例改为真实知识点（"过拟合定义→训练准确率99%测试85%"），不用占位符
+- 明确标注"思维导图是最重要的输出"，末尾追加"宁可少写大纲也要保证导图完整"
+- 超时同步上调：30s → 60s → **90s**
+
+---
+
+### 坑 11：yt-dlp stdout 流式下载时 stderr 缓冲区死锁（已废弃）
+
+**现象**：长时间下载（>15 分钟）时，下载卡死并在 60 秒后超时报错。
+
+**原因**：`stream()` 异步生成器只读取 `process.stdout`，完全不消费 `process.stderr`。yt-dlp 在 `-o -` 模式下每秒输出一条进度信息到 stderr（约 70 字节/次），asyncio `StreamReader` 默认缓冲区仅 64KB。约 15 分钟后 stderr 缓冲区填满 → yt-dlp 阻塞在 stderr write → stdout 不再产出数据 → `process.stdout.read()` 挂起 → 超时。
+
+**解决**：模块 4 整体架构改为缓存模式（临时文件 + FileResponse），流式代理已废弃，此坑不再适用。
+
+---
+
+### 坑 12：B站 下载只有声音没有画面 — AV1 编码兼容性
+
+**现象**：B站 下载的 MP4 文件在某些播放器（QuickTime、Windows Media Player）中只有声音，画面黑屏。
+
+**原因**：B站 部分分辨率（尤其是 360p）使用 AV1 视频编码。AV1 是新一代编码，兼容性不如 H.264。macOS QuickTime 不支持 AV1，直接静音播放。
+
+**解决**：添加 `--format-sort vcodec:avc` 参数，告诉 yt-dlp 优先选 H.264（AVC）编码。如果该分辨率没有 H.264 版本，yt-dlp 自动降级到 AV1。
+
+---
+
+### 坑 13：中文文件名导致 500 — HTTP 头 latin-1 编码限制
+
+**现象**：B站 视频下载成功，但返回 500 错误，文件无法传到浏览器。后端日志报 `UnicodeEncodeError: 'latin-1' codec can't encode characters`。
+
+**原因**：手动构建的 `Content-Disposition` 头包含中文原始文件名，Starlette 的 `init_headers()` 将所有 HTTP 头值编码为 latin-1，中文超出 latin-1 字符集范围 → 编码失败 → 500。
+
+**解决**：废弃手动构建的 `Content-Disposition` 头，改用 `FileResponse` 的 `filename` 参数。Starlette 内部自动处理 UTF-8 编码（`filename*=UTF-8''%E4%B8%AD%E6%96%87`），不会触发 latin-1 限制。
+
+---
+
+### 坑 14：B站 cookies 文件格式 — 空格 vs Tab 分隔
+
+**现象**：用户粘贴 Netscape 格式 cookies 后，yt-dlp 报 `skipping cookie file entry due to invalid length 1`，cookies 全部无效。
+
+**原因**：Netscape cookies 格式要求 Tab（`\t`）作为字段分隔符。用户从浏览器导出或粘贴时，Tab 常被转换成空格，导致 yt-dlp 按 Tab 切分只能得到 1 个字段。
+
+**解决**：后端不依赖用户粘贴的格式，在写入临时文件时按空格切分前 6 个字段，剩余部分作为 value（value 本身可能含空格）。公式：`domain\tflag\tpath\tsecure\texpiration\tname\tvalue`。
+
+---
+
+### 坑 15：yt-dlp 原始 format_id 不可靠 — DASH 流选择问题
+
+**现象**：使用 yt-dlp 返回的原始 `format_id`（如 B站 的 "100022"）下载，结果只有声音没有视频，或者文件格式错误。
+
+**原因**：yt-dlp 的 `format_id` 是内部标识符，不同平台含义不同。B站 的 DASH 流（音视频分离）中，按 `format_id` 直接下载可能只拿到音频流或视频流中的一个。用 `format_id+bestaudio` 合并依赖 ffmpeg 且兼容性差。
+
+**解决**：完全放弃原始 `format_id`。`_extract_formats()` 只收集可用分辨率，`download_video()` 使用时转化为 yt-dlp 原生选择器 `bestvideo[height<=X]+bestaudio/best[height<=X]`。yt-dlp 自己处理流选择、音视频合并、编码优先级，后端只做封装。
+
+---
+
+### 坑 16：YouTube 下载 HTTP 403 Forbidden — SABR 流式拦截
+
+**现象**：YouTube 视频解析成功，但下载时报 `WARNING: [youtube] Some web client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client.` + `ERROR: unable to download video data: HTTP Error 403: Forbidden`。
+
+**原因**：YouTube 近期加强了反爬措施，对 web 客户端强制 SABR（Server And Browser Rendering）流式传输。yt-dlp 默认的 web 客户端无法获取高清 DASH 格式的 URL，降级到 format 18 后仍被 CDN 返回 403。详见 yt-dlp issue #12482。
+
+**解决**：在 `parse_video_info()`、`_get_download_filename()`、`download_video()` 三处添加平台检测，YouTube 时自动注入 `--extractor-args "youtube:player_client=android"`，切换到 Android 客户端绕过 SABR 限制。
+
+**当前限制**：Android 客户端没有 GVS PO Token 时只能获取 format 18（360p mp4 合并流）。高清 DASH 格式需要 PO Token（类似 B站 cookies 的机制，后续可添加支持）。
+
+---
+
+### 坑 17：emoji 图标跨平台不一致
+
+**现象**：界面使用 emoji（📹📝📋🔑💡🧠💬🤖⬇️🔄❌✅⏳📜🍪📖🎬🔐⚠️💡）作为功能图标，在不同操作系统渲染效果不一致（macOS/iOS 原生 → Windows 黑白线条 → Android 彩色 blob），且无法通过 CSS color 控制颜色。
+
+**原因**：emoji 是 font-dependent 的字符，渲染效果完全取决于操作系统自带的 emoji 字体，开发者无法控制样式。ui-ux-pro-max skill 明确规则："No emojis as structural icons — use SVG icons instead"。
+
+**解决**：模块 5 中将全部功能图标（选项卡、按钮、进度步骤、下载按钮、关闭按钮等）替换为 Feather 风格内联 SVG（`viewBox="0 0 24 24"`），通过 `stroke="currentColor"` 继承文字颜色，在浅色/暗色模式下自动适配。标题中的装饰性 emoji 保留但不影响交互。
+
+---
+
+
+*最后更新：2026-06-28 完成模块 5 六优先级样式打磨（响应式/暗色/动画/视觉/清理/无障碍）+ 坑 16-17；模块 4 YouTube SABR 修复验证通过（Android 客户端, H.264+AAC 360p）*

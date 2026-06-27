@@ -111,32 +111,35 @@ async def analyze_video_stream(req: ParseRequest):
             # 步骤 2：提取字幕
             yield _sse("subtitles", "processing", "正在提取字幕文本...")
 
-            subtitle_text = await extract_subtitle_text(req.url, cookies=req.cookies)
+            subtitle_data = await extract_subtitle_text(req.url, cookies=req.cookies)
 
-            if not subtitle_text:
+            if not subtitle_data:
                 yield _sse("subtitles", "failed",
                            "该视频没有可用字幕（可能未开启自动字幕或语言不支持）\n"
                            "可以尝试提供中文字幕的视频链接")
                 return
 
-            char_count = len(subtitle_text)
+            char_count = len(subtitle_data.plain_text)
             yield _sse("subtitles", "done", f"已提取 {char_count} 字字幕文本")
 
             # 步骤 3：AI 分析
             yield _sse("analyze", "processing", "AI 正在分析视频内容，请稍候...")
 
             try:
-                result = await analyze_subtitles(subtitle_text, video_info.title)
+                result = await analyze_subtitles(subtitle_data.plain_text, video_info.title)
             except RuntimeError as e:
                 yield _sse("analyze", "failed", str(e))
                 return
 
-            # 成功！推送最终结果
+            # 成功！推送最终结果（含四维度 + 字幕片段）
             yield _sse("analyze", "done", "分析完成", {
                 "title": result.title,
-                "summary": result.summary,
-                "key_points": result.key_points,
+                "overview": result.overview,
+                "outline": [item.model_dump() for item in result.outline],
+                "key_points": [item.model_dump() for item in result.key_points],
+                "conclusions": [item.model_dump() for item in result.conclusions],
                 "mindmap": result.mindmap,
+                "subtitle_segments": subtitle_data.segments,
             })
 
         except Exception as e:

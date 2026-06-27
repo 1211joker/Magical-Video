@@ -146,7 +146,7 @@ function onCookiesChange() {
 }
 .cookie-toggle:hover {
   background: var(--bg-primary);
-  border-color: #ccc;
+  border-color: var(--border-strong);
 }
 .toggle-icon {
   font-size: 0.8rem;
@@ -236,15 +236,15 @@ function onCookiesChange() {
   margin-top: 6px;
   font-size: 0.82rem;
 }
-.status-ok { color: #16a34a; }
-.status-warn { color: #d97706; }
+.status-ok { color: var(--success); }
+.status-warn { color: var(--warning); }
 .status-empty { color: var(--text-muted); }
 
 /* 底部提示 */
 .cookie-tips {
   margin-top: 16px;
   padding: 14px;
-  background: #f0f4ff;
+  background: var(--accent-light);
   border-radius: var(--radius-sm);
   font-size: 0.83rem;
   color: var(--text-secondary);
