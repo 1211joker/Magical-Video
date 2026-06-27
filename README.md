@@ -261,4 +261,16 @@ cmd = [sys.executable, "-m", "yt_dlp", ...]
 
 ---
 
+### 坑 7：B站 字幕提取不到（--dump-json 不返回字幕 URL）
+
+**现象**：B站 视频明明有中文字幕，但 AI 分析始终提示"该视频没有可用字幕"。
+
+**原因**：和坑 5 类似，`--dump-json` 虽然能拿到视频元数据，但 `subtitles` / `automatic_captions` 字段为空，字幕 URL 无法通过 JSON 方式获取。
+
+**解决**：放弃 `--dump-json → 取 URL → httpx 下载` 的间接路线，改用 yt-dlp 直接下载字幕文件：
+- `--write-subs --write-auto-subs --sub-langs "zh-Hans,zh-CN,zh-TW,zh,ai-zh,en" --skip-download`
+- 字幕 .vtt 文件下载到临时目录 → 按中文优先排序选最佳 → 读取解析 → 清理临时目录
+
+---
+
 *最后更新：2026-06-27 完成模块 1 + 2 + 2.5 + 3*
