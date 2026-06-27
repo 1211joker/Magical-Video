@@ -230,4 +230,14 @@ cmd = [sys.executable, "-m", "yt_dlp", ...]
 
 ---
 
+### 坑 5：yt-dlp 无法提取 YouTube 字幕（PO Token 限制）
+
+**现象**：`yt-dlp --dump-json` 返回的 `subtitles` 和 `automatic_captions` 都是空字典，即使 `--list-subs` 显示有字幕。
+
+**原因**：YouTube 近期加强了反爬措施，要求 web_safari 客户端提供 PO Token。yt-dlp 默认的 web 客户端受到 SABR streaming 限制，字幕 URL 无法获取。详见 yt-dlp issue #12482。
+
+**解决**：YouTube 字幕改用 `youtube-transcript-api` 这个专门的 Python 库，它直接请求 YouTube 的 timedtext API，不受 yt-dlp 的 PO Token 限制。B站 字幕继续使用 yt-dlp（B站 没有 PO Token 问题）。
+
+---
+
 *最后更新：2026-06-27 完成模块 1 + 2 + 2.5 + 3*
