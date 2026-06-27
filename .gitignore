@@ -1,0 +1,20 @@
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+
+# 后端
+backend/__pycache__/
+backend/*.pyc
+backend/.env
+backend/downloads/
+
+# IDE
+.vscode/
+.idea/
+
+# 环境
+.env

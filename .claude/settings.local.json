@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(yt-dlp --version)",
+      "Bash(pip3 install *)"
+    ]
+  }
+}
