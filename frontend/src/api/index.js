@@ -96,6 +96,34 @@ export function startAnalysis(url, cookies, onEvent, onError) {
 }
 
 /**
+ * AI 问答 — 基于视频字幕内容向 AI 提问。
+ *
+ * 参数：
+ *   question         - 用户问题
+ *   subtitleText     - 字幕全文（作为回答依据）
+ *   analysisSummary  - AI 分析结果摘要（辅助理解上下文）
+ *
+ * 返回：
+ *   { answer: string }
+ */
+export async function askQuestion(question, subtitleText, analysisSummary) {
+  const res = await fetch(`${API_BASE}/ask`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question,
+      subtitle_text: subtitleText,
+      analysis_summary: analysisSummary,
+    })
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail || '问答请求失败')
+  }
+  return res.json()
+}
+
+/**
  * 下载视频 — POST 请求后端代理下载，接收 Blob 流后触发浏览器保存。
  *
  * 参数：

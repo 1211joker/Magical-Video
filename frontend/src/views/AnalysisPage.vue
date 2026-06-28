@@ -146,7 +146,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { parseVideo, startAnalysis } from '../api/index.js'
 import VideoInfo from '../components/VideoInfo.vue'
 import CookieGuide from '../components/CookieGuide.vue'
@@ -166,6 +166,43 @@ const analysisResult = ref(null)
 const analysisError = ref('')
 const progressSteps = reactive([])
 let abortAnalysis = null
+
+// 状态持久化 — 页面切换后恢复已解析的视频和 AI 分析结果
+const STATE_KEY = 'analysisPageState'
+
+// 页面挂载时恢复之前的分析状态
+onMounted(() => {
+  try {
+    const saved = localStorage.getItem(STATE_KEY)
+    if (saved) {
+      const state = JSON.parse(saved)
+      if (state.urlInput) urlInput.value = state.urlInput
+      if (state.videoInfo) videoInfo.value = state.videoInfo
+      if (state.analysisResult) analysisResult.value = state.analysisResult
+      if (state.cookies) cookies.value = state.cookies
+    }
+  } catch (e) { /* 数据损坏，忽略 */ }
+})
+
+// 自动保存状态变化
+watch(
+  [urlInput, videoInfo, analysisResult, () => cookies.value],
+  () => {
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify({
+        urlInput: urlInput.value,
+        videoInfo: videoInfo.value,
+        analysisResult: analysisResult.value,
+        cookies: cookies.value,
+      }))
+    } catch (e) { /* localStorage 可能满了 */ }
+  },
+  { deep: true }
+)
+
+function clearSavedState() {
+  try { localStorage.removeItem(STATE_KEY) } catch (e) { /* ignore */ }
+}
 
 const progressLabels = {
   parse: '获取视频信息',
@@ -261,6 +298,15 @@ function handleAnalyze() {
       if (event.status === 'done' && event.result) {
         analyzing.value = false
         analysisResult.value = event.result
+        // 存入 localStorage 供 AI 问答页面使用
+        try {
+          localStorage.setItem('lastAnalysisResult', JSON.stringify({
+            ...event.result,
+            savedAt: Date.now(),
+          }))
+        } catch (e) {
+          // localStorage 可能满了，忽略
+        }
       }
     },
     (err) => {

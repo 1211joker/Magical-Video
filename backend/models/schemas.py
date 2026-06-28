@@ -83,6 +83,23 @@ class ProgressEvent(BaseModel):
 
 # ========== 通用响应 ==========
 
+# ========== AI 问答模型 ==========
+
+class QaRequest(BaseModel):
+    """AI 问答请求"""
+    question: str                       # 用户问题
+    subtitle_text: str                  # 字幕全文（作为回答依据）
+    analysis_summary: str = ""          # AI 分析结果摘要（辅助理解上下文）
+    chat_history: list[dict] = []       # 历史对话记录（预留多轮对话）
+
+
+class QaResponse(BaseModel):
+    """AI 问答响应"""
+    answer: str
+
+
+# ========== 通用响应 ==========
+
 class ErrorResponse(BaseModel):
     """错误响应"""
     error: str

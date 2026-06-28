@@ -131,7 +131,7 @@ async def analyze_video_stream(req: ParseRequest):
                 yield _sse("analyze", "failed", str(e))
                 return
 
-            # 成功！推送最终结果（含四维度 + 字幕片段）
+            # 成功！推送最终结果（含四维度 + 字幕片段 + 字幕全文用于 QA）
             yield _sse("analyze", "done", "分析完成", {
                 "title": result.title,
                 "overview": result.overview,
@@ -140,6 +140,7 @@ async def analyze_video_stream(req: ParseRequest):
                 "conclusions": [item.model_dump() for item in result.conclusions],
                 "mindmap": result.mindmap,
                 "subtitle_segments": subtitle_data.segments,
+                "subtitle_text": subtitle_data.plain_text,
             })
 
         except Exception as e:

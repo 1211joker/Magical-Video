@@ -14,7 +14,7 @@ logging.basicConfig(
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import analyze, download
+from routers import analyze, download, qa
 
 app = FastAPI(
     title="AI 视频下载总结器",
@@ -34,6 +34,7 @@ app.add_middleware(
 # 注册路由
 app.include_router(analyze.router)
 app.include_router(download.router)
+app.include_router(qa.router)
 
 
 @app.get("/")

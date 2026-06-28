@@ -105,6 +105,24 @@ const solvedIssues = [
     description: '所有功能（链接解析、AI 分析、视频下载）集中在一个 App.vue 中，代码 400+ 行，缺乏导航结构。',
     solution: '引入 vue-router，拆分为四页面（首页/AI解析/视频下载/问题及优化），App.vue 变布局壳。',
   },
+  {
+    id: 9,
+    title: 'AI Q&A 系统提示词缺乏推理深度',
+    description: '初版 Q&A 提示词仅要求"严格基于字幕回答 + 引用证据"，回答较为机械，缺乏思考过程和批判性视角，语气偏正式。',
+    solution: '重写为思维链（CoT）系统提示词：五步内部推理流程（理解意图→检索证据→评估问题→组织回答→检查准确性）；加入批判性思考——识别错误理解并温和纠正；语气改为朋友聊天式（"嗯""打个比方"）；主动提供延伸建议和实例。',
+  },
+  {
+    id: 10,
+    title: 'Q&A 传递给 AI 的上下文信息不完整',
+    description: 'Q&A 请求中 analysis_summary 字段只包含概述和总结，缺少内容大纲和关键要点，导致 AI 回答缺乏足够上下文支撑。',
+    solution: 'enhance analysis_summary 构造逻辑，向 AI 传递完整四维度分析结果：概述 + 内容大纲（含时间段）+ 关键要点（含原文证据）+ 总结。帮助 AI 更准确地定位视频中的相关信息。',
+  },
+  {
+    id: 11,
+    title: '页面切换导致分析状态丢失',
+    description: '从 AI解析 页面切换到其他页面（如 AI问答）后再返回，之前解析的视频信息、AI 分析结果、B站 Cookies 全部丢失，需要重新输入和解析。',
+    solution: '使用 localStorage + Vue watch 实现状态持久化：onMounted 自动恢复 urlInput / videoInfo / analysisResult / cookies；watch 监听变化自动保存。数据在页面刷新后仍存在，重新解析时自动覆盖旧数据。',
+  },
 ]
 
 const pendingIssues = [
@@ -149,6 +167,12 @@ const pendingIssues = [
     title: 'B站 高画质需会员 cookies',
     description: 'B站 1080p+ 和付费视频需要大会员 cookies，免费用户仅能下载较低画质。',
     impact: '非会员用户体验受限。',
+  },
+  {
+    id: 108,
+    title: 'AI 问答不支持多轮对话',
+    description: '虽然后端 Q&A 接口预留了 chat_history 字段，但前端目前每次提问都是独立请求，不携带历史对话上下文，无法进行追问或延续上一轮的讨论。',
+    impact: '用户无法进行连续深入对话，每次都要重新描述背景。',
   },
 ]
 </script>

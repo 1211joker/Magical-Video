@@ -29,6 +29,18 @@ The system prompt instructs the model to preserve technical terms, numbers, case
 
 ---
 
+## 💬 Core Feature: AI Q&A
+
+After the AI analysis, you can ask questions about the video content and get answers grounded in the actual subtitles:
+
+1. **Context**: The Q&A page loads the most recent analysis result, displaying the full content outline (overview, outline, key points, conclusions) in a collapsible sidebar.
+2. **Ask Questions**: Type any question about the video — the backend sends the subtitle text and analysis summary to DeepSeek, with a system prompt that requires answers to cite original evidence.
+3. **Chat Interface**: A clean chat UI with message bubbles, blockquote-styled citations, and a typing indicator while waiting for the AI response.
+
+The Q&A system prompt instructs the model to base answers strictly on subtitle content, quote original text with「」marks, and honestly state when information is not covered in the video.
+
+---
+
 ## 📥 Secondary: Video Download
 
 The application can also download videos directly. Given a URL, it queries available formats and resolutions, then uses yt-dlp to download the selected format. The file is streamed to the browser as a download.
@@ -65,7 +77,8 @@ Magical-Video/
 │   ├── models/schemas.py         # Pydantic models (request/response)
 │   ├── routers/
 │   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
-│   │   └── download.py           # /api/download
+│   │   ├── download.py           # /api/download
+│   │   └── qa.py                 # /api/ask — AI Q&A endpoint
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp subprocess wrapper
 │       ├── subtitle_service.py   # Subtitle extraction and parsing
@@ -90,6 +103,7 @@ Magical-Video/
     │   └── views/                # Page-level components
     │       ├── HomePage.vue
     │       ├── AnalysisPage.vue
+    │       ├── QAPage.vue
     │       ├── DownloadPage.vue
     │       └── IssuesPage.vue
     ├── index.html
@@ -153,6 +167,13 @@ Serve `frontend/dist/` with any static file server and proxy `/api/*` to the Fas
 5. Click "解析视频". The video metadata (title, duration, thumbnail) will appear.
 6. Click "AI 分析". The backend extracts subtitles and sends them to DeepSeek. Progress is shown in real time.
 7. When complete, browse the results across four tabs: Overview, Outline, Key Points, and Conclusions. An interactive mind map is available under the "思维导图" tab.
+
+### AI Q&A
+
+1. After analysis is complete on the "AI解析" page, click "AI问答" in the navigation bar.
+2. Browse the content outline in the left sidebar — click section headers to expand/collapse details.
+3. Type your question in the input box at the bottom and press Enter to send.
+4. The AI will answer based on the video's subtitle content, citing original text where applicable.
 
 ### Quick Download
 
