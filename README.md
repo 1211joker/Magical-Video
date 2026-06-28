@@ -104,7 +104,6 @@ Magical-Video/
     │       ├── HomePage.vue
     │       ├── AnalysisPage.vue
     │       ├── QAPage.vue
-    │       ├── DownloadPage.vue
     │       └── IssuesPage.vue
     ├── index.html
     ├── package.json
@@ -204,8 +203,8 @@ All three channels must go through the proxy for full YouTube support. The `YTDL
 
 ### Quick Download
 
-1. Click "视频下载" in the navigation bar.
-2. Paste a video URL and click "解析视频".
+1. On the "AI解析" page, paste a video URL and click "解析视频".
+2. After the video info loads, scroll down to the download section.
 3. Select your preferred resolution from the grid.
 4. Click "下载视频". The browser will prompt you to save the file.
 

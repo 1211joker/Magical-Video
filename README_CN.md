@@ -104,7 +104,6 @@ Magical-Video/
     │       ├── HomePage.vue
     │       ├── AnalysisPage.vue
     │       ├── QAPage.vue
-    │       ├── DownloadPage.vue
     │       └── IssuesPage.vue
     ├── index.html
     ├── package.json
@@ -204,8 +203,8 @@ YTDLP_PROXY=http://127.0.0.1:7890   # 替换为你的代理地址
 
 ### 快速下载
 
-1. 点击导航栏中的"视频下载"。
-2. 粘贴视频链接，点击"解析视频"。
+1. 在"AI解析"页面，粘贴视频链接并点击"解析视频"。
+2. 视频信息加载后，向下滚动到下载区域。
 3. 在清晰度网格中选择需要的分辨率。
 4. 点击"下载视频"，浏览器将弹出保存对话框。
 
