@@ -272,7 +272,12 @@ async def _extract_youtube_subs(url: str) -> Optional[SubtitleData]:
 
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        api = YouTubeTranscriptApi()
+        # 配置代理：国内网络需代理才能访问 YouTube 字幕 API
+        proxy_config = None
+        if YTDLP_PROXY:
+            from youtube_transcript_api.proxies import GenericProxyConfig
+            proxy_config = GenericProxyConfig(http_url=YTDLP_PROXY, https_url=YTDLP_PROXY)
+        api = YouTubeTranscriptApi(proxy_config=proxy_config)
         transcript = await asyncio.to_thread(
             api.fetch, video_id, LANG_PRIORITY_YT
         )

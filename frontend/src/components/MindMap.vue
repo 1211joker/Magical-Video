@@ -8,7 +8,9 @@
         下载思维导图
       </button>
     </div>
-    <svg ref="svgContainer" class="mindmap-container" width="100%" :style="{ height: svgHeight + 'px' }"></svg>
+    <div ref="container" class="mindmap-inner">
+      <svg ref="svgEl" class="mindmap-svg" width="100%" :style="{ height: svgHeight + 'px' }"></svg>
+    </div>
   </div>
 </template>
 
@@ -24,9 +26,14 @@ const props = defineProps({
   }
 })
 
-const svgContainer = ref(null)
+const container = ref(null)
 const svgHeight = ref(500)
 let currentMM = null
+
+// 获取实际的 SVG 元素（markmap 在 svgEl 内创建内容）
+function getSvgEl() {
+  return container.value?.querySelector('svg') || null
+}
 
 // 把 AI 返回的 JSON 脑图结构转成 markmap 认识的 markdown
 function toMarkdown(node, level = 0) {
@@ -42,13 +49,14 @@ function toMarkdown(node, level = 0) {
 }
 
 function render() {
-  if (!svgContainer.value || !props.data) {
-    console.warn('[MindMap] render skipped', { hasContainer: !!svgContainer.value, hasData: !!props.data })
+  const svg = getSvgEl()
+  if (!svg || !props.data) {
+    console.warn('[MindMap] render skipped', { hasSvg: !!svg, hasData: !!props.data })
     return
   }
 
   // 清掉上次渲染的
-  svgContainer.value.innerHTML = ''
+  svg.innerHTML = ''
 
   try {
     const markdown = toMarkdown(props.data)
@@ -56,7 +64,7 @@ function render() {
     const { root } = transformer.transform(markdown)
 
     currentMM = Markmap.create(
-      svgContainer.value,
+      svg,
       {
         autoFit: true,
         colorFreezeLevel: 2,
@@ -73,10 +81,10 @@ function render() {
     // 动态计算 SVG 高度：等渲染完成后读取内容边界
     nextTick(() => {
       requestAnimationFrame(() => {
-        const svg = svgContainer.value
-        if (!svg) return
+        const svgEl = getSvgEl()
+        if (!svgEl) return
         // 查找 markmap 的 <g> 元素获取实际高度
-        const g = svg.querySelector('g')
+        const g = svgEl.querySelector('g')
         if (g) {
           const bbox = g.getBBox()
           if (bbox.height > 0) {
@@ -92,8 +100,7 @@ function render() {
 
 // 下载 SVG
 function downloadSVG() {
-  // 容器本身就是 SVG 元素
-  const svgEl = svgContainer.value
+  const svgEl = getSvgEl()
   if (!svgEl) return
 
   // 克隆一份来加白底（否则透明背景下载后不好看）
@@ -129,8 +136,9 @@ onBeforeUnmount(() => {
   if (currentMM) {
     currentMM = null
   }
-  if (svgContainer.value) {
-    svgContainer.value.innerHTML = ''
+  const svg = getSvgEl()
+  if (svg) {
+    svg.innerHTML = ''
   }
 })
 </script>
@@ -173,7 +181,12 @@ onBeforeUnmount(() => {
   background: var(--accent-light);
 }
 
-.mindmap-container {
+.mindmap-inner {
+  width: 100%;
+  min-height: 400px;
+}
+
+.mindmap-svg {
   width: 100%;
   display: block;
   min-height: 400px;

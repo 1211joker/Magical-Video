@@ -122,6 +122,7 @@ Magical-Video/
 - ffmpeg (recommended; yt-dlp uses it for merging video and audio streams)
 - A DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com/))
 - yt-dlp (installed automatically via pip)
+- **A proxy for YouTube access** (required if you're in a region where YouTube is blocked; see [Proxy Configuration](#proxy-configuration) below)
 
 ### Backend
 
@@ -153,6 +154,32 @@ cd frontend && npm run build      # Output: frontend/dist/
 ```
 
 Serve `frontend/dist/` with any static file server and proxy `/api/*` to the FastAPI backend.
+
+### Proxy Configuration
+
+If you're in a region where YouTube is inaccessible, you need a proxy to use YouTube-related features (parsing, subtitles, thumbnails). Without a proxy, only Bilibili videos will work.
+
+**Step 1: Set up a local proxy**
+
+Use any HTTP proxy client (Clash, V2Ray, Shadowsocks, etc.) running on your machine. Most proxy tools expose an HTTP endpoint like `http://127.0.0.1:7890` or `http://127.0.0.1:1080`.
+
+**Step 2: Configure the environment variable**
+
+In `backend/.env`, set the `YTDLP_PROXY` variable:
+
+```bash
+YTDLP_PROXY=http://127.0.0.1:7890   # Replace with your proxy address
+```
+
+**What this proxy covers:**
+
+| Component | Proxy Source | Purpose |
+|-----------|-------------|---------|
+| yt-dlp (video info + download) | `--proxy` CLI flag | Fetches video metadata and downloads |
+| `/api/thumbnail` (thumbnail images) | `httpx.AsyncClient(proxy=...)` | Proxies YouTube thumbnail images |
+| `youtube-transcript-api` (subtitles) | `GenericProxyConfig` | Fetches subtitle data from YouTube's API |
+
+All three channels must go through the proxy for full YouTube support. The `YTDLP_PROXY` variable is used consistently across all components. DeepSeek API calls do NOT go through the proxy (they connect directly to `api.deepseek.com`).
 
 ---
 

@@ -15,6 +15,6 @@ AI_RATE_LIMIT_PER_MIN = 10  # 每个 IP 每分钟最多 10 次 AI 分析
 MAX_CONCURRENT_TASKS = 2  # 同一用户同时最多 2 个任务
 
 # 超时配置
-AI_ANALYSIS_TIMEOUT = 90  # AI 分析超时秒数（10000 tokens 输出需要更长时间）
+AI_ANALYSIS_TIMEOUT = 120  # AI 分析超时秒数（长字幕 + 10000 tokens + 思维导图需要较长时间）
 YTDLP_TIMEOUT = 60  # yt-dlp 元数据查询最长等待时间
 DOWNLOAD_TIMEOUT = 600  # 实际下载最长等待时间（10分钟，视频文件较大）

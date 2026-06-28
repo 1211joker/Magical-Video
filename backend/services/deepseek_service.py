@@ -122,7 +122,7 @@ async def analyze_subtitles(
         "stream": False,
     }
 
-    async with httpx.AsyncClient(timeout=AI_ANALYSIS_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=AI_ANALYSIS_TIMEOUT, proxy=None) as client:
         resp = await client.post(DEEPSEEK_API_URL, json=body, headers=headers)
 
         if resp.status_code != 200:

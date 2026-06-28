@@ -12,11 +12,6 @@ const routes = [
     component: () => import('../views/AnalysisPage.vue'),
   },
   {
-    path: '/download',
-    name: 'download',
-    component: () => import('../views/DownloadPage.vue'),
-  },
-  {
     path: '/qa',
     name: 'qa',
     component: () => import('../views/QAPage.vue'),

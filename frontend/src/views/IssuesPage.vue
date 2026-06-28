@@ -123,6 +123,24 @@ const solvedIssues = [
     description: '从 AI解析 页面切换到其他页面（如 AI问答）后再返回，之前解析的视频信息、AI 分析结果、B站 Cookies 全部丢失，需要重新输入和解析。',
     solution: '使用 localStorage + Vue watch 实现状态持久化：onMounted 自动恢复 urlInput / videoInfo / analysisResult / cookies；watch 监听变化自动保存。数据在页面刷新后仍存在，重新解析时自动覆盖旧数据。',
   },
+  {
+    id: 12,
+    title: 'YouTube 封面图 / 字幕提取 / AI 分析代理不一致',
+    description: 'Bilibili 正常但 YouTube 封面图不显示（504）、字幕提取超时、AI 分析 504。根因是 yt-dlp 走了代理，但 httpx 封面图代理和 youtube-transcript-api 均未走代理，国内直连 YouTube 服务超时。',
+    solution: '三通道统一走代理：封面图代理根据域名自动切换（YouTube → 使用 YTDLP_PROXY + YouTube Referer）；字幕提取传入 GenericProxyConfig；AI 分析显式 proxy=None 确保直连。修复 Vite 代理超时（5分钟）和 DeepSeek API 超时（120s）。',
+  },
+  {
+    id: 13,
+    title: '思维导图空白 — Vue 3.5 模板 hoisting',
+    description: '分析完成后切换到思维导图选项卡显示空白，控制台报 "Missing ref owner context. ref cannot be used on hoisted vnodes"。Vue 3.5 模板编译器将 Transition 内的 MindMap 组件根 SVG 元素静态提升，ref 无法绑定。',
+    solution: '改用 div ref + querySelector("svg") 获取 DOM 元素，绕过 Vue 模板 ref 的 hoisting 限制。更稳健的模式 — 不依赖编译器对 ref 的处理行为。',
+  },
+  {
+    id: 14,
+    title: '导航栏冗余 — 独立下载页面形同虚设',
+    description: 'AI 解析页面已内嵌完整的视频下载功能（DownloadSection 组件），导航栏中独立的"视频下载"栏目造成重复入口，用户困惑。',
+    solution: '删除导航栏"视频下载"链接、/download 路由、DownloadPage.vue 整个文件。导航精简为 4 项：首页 / AI解析 / AI问答 / 问题及优化。',
+  },
 ]
 
 const pendingIssues = [

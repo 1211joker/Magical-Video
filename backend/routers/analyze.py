@@ -53,13 +53,19 @@ async def proxy_thumbnail(url: str):
     """
     image_url = unquote(url)
 
+    # 根据图片域名选择 Referer 和代理策略
+    is_youtube = "ytimg.com" in image_url or "youtube.com" in image_url
     headers = {
-        "Referer": "https://www.bilibili.com",
+        "Referer": "https://www.youtube.com/" if is_youtube else "https://www.bilibili.com",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
 
+    # YouTube 图片 CDN 国内需走代理，否则 504
+    from config import YTDLP_PROXY
+    proxy = YTDLP_PROXY if (is_youtube and YTDLP_PROXY) else None
+
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=proxy) as client:
             resp = await client.get(image_url, headers=headers)
             if resp.status_code != 200:
                 raise HTTPException(status_code=404, detail="封面图获取失败")

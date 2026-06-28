@@ -122,6 +122,7 @@ Magical-Video/
 - ffmpeg（推荐安装；yt-dlp 合并视频和音频时需要）
 - DeepSeek API 密钥（[platform.deepseek.com](https://platform.deepseek.com/)）
 - yt-dlp（通过 pip 自动安装）
+- **YouTube 代理**（国内网络无法直连 YouTube，需配置代理才能使用 YouTube 相关功能；见下方[代理配置](#代理配置)）
 
 ### 后端
 
@@ -153,6 +154,32 @@ cd frontend && npm run build      # 输出到 frontend/dist/
 ```
 
 将 `frontend/dist/` 部署到任意静态文件服务器，并将 `/api/*` 请求代理到 FastAPI 后端。
+
+### 代理配置
+
+国内网络无法直连 YouTube，需要配置代理才能使用 YouTube 相关的解析、字幕提取、封面图加载等功能。如果不配置代理，仅 Bilibili 视频可以正常使用。
+
+**第一步：启动本地代理**
+
+使用任意 HTTP 代理客户端（Clash、V2Ray、Shadowsocks 等）。大多数代理工具会在本地暴露一个 HTTP 端口，如 `http://127.0.0.1:7890` 或 `http://127.0.0.1:1080`。
+
+**第二步：在 `.env` 中配置**
+
+编辑 `backend/.env`，设置 `YTDLP_PROXY` 变量：
+
+```bash
+YTDLP_PROXY=http://127.0.0.1:7890   # 替换为你的代理地址
+```
+
+**代理覆盖范围：**
+
+| 组件 | 代理方式 | 用途 |
+|------|---------|------|
+| yt-dlp（视频信息 + 下载） | `--proxy` 命令行参数 | 获取视频元数据和下载视频 |
+| `/api/thumbnail`（封面图代理） | `httpx.AsyncClient(proxy=...)` | 代理加载 YouTube 封面图 |
+| `youtube-transcript-api`（字幕提取） | `GenericProxyConfig` | 从 YouTube 字幕 API 获取字幕数据 |
+
+三个通道都必须走代理才能完整支持 YouTube。`YTDLP_PROXY` 变量在所有组件中一致使用。DeepSeek API 调用**不走代理**（国内直连 `api.deepseek.com` 更快）。
 
 ---
 

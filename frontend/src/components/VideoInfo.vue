@@ -3,7 +3,7 @@
     <!-- 平台标签 + 封面图 -->
     <div class="video-hero">
       <img
-        v-if="info.thumbnail"
+        v-if="info.thumbnail && !thumbFailed"
         :src="thumbnailSrc"
         :alt="info.title"
         class="video-thumbnail"
