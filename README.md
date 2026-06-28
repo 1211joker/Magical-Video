@@ -2,9 +2,9 @@
 
 # 🎬 Magical Video
 
-Magical Video is a web application that uses AI to analyze video content. Given a YouTube or Bilibili URL, it extracts the video's subtitles, sends them to DeepSeek for structured analysis, and presents the results as a multi-dimensional summary with an interactive mind map. It also supports downloading videos in available resolutions.
+Magical Video is a web application that uses AI to analyze video content. Given a YouTube or Bilibili URL, it extracts the video's subtitles, sends them to DeepSeek for structured analysis, and presents the results as a multi-dimensional summary with an interactive mind map. After analysis, you can chat with AI about the video — ask questions and get answers backed by the actual subtitles. It also supports downloading videos in available resolutions.
 
-The core value is the AI analysis pipeline: instead of watching a 30-minute video, you can skim a structured breakdown (overview, outline, key points, conclusions, and a knowledge-tree mind map) in under a minute.
+The core value is the AI analysis pipeline: instead of watching a 30-minute video, you can skim a structured breakdown (overview, outline, key points, conclusions, and a knowledge-tree mind map) in under a minute, then dive deeper into specific topics through AI-powered Q&A.
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
