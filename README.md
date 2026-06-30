@@ -154,36 +154,151 @@ npm run dev                       # Dev server at http://localhost:5173
 
 The Vite dev server proxies `/api` requests to `localhost:8000` automatically.
 
-### Production
+### 🐳 Docker Deployment
 
-**Docker Compose (recommended)**:
+The project includes a complete Docker Compose setup for production deployment. Two containers work together:
 
-```bash
-# 1. Configure environment
-cp backend/.env.example backend/.env
-vim backend/.env   # Fill in DEEPSEEK_API_KEY
-
-# 2. One-command deploy
-docker compose up -d
-
-# 3. Check status
-docker compose ps
-docker compose logs -f
+```
+Browser (port 80)
+    │
+    ▼
+┌──────────────────────────┐
+│  nginx (nginx:alpine)    │  ← Static files + reverse proxy
+│  /              → dist/  │     gzip, security headers, SPA fallback
+│  /api/*         → proxy  │
+└──────────┬───────────────┘
+           │ internal network
+           ▼
+┌──────────────────────────┐
+│  backend (python:3.12)   │  ← FastAPI + uvicorn
+│  :8000                   │     yt-dlp, DeepSeek, rate limiting
+└──────────────────────────┘
 ```
 
-This starts two containers:
-- **backend** — Python FastAPI on internal port 8000
-- **nginx** — Static files + `/api` reverse proxy on port 80
+#### Prerequisites
 
-**Manual deploy**:
+- **Docker** ≥ 20.10 and **Docker Compose** ≥ 2.0
+- A DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com/))
+- (Optional) An HTTP proxy if YouTube is blocked in your region
+
+#### Quick Start
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/1211joker/Magical-Video.git
+cd Magical-Video
+
+# 2. Create and configure the environment file
+cp backend/.env.example backend/.env
+vim backend/.env
+```
+
+Edit `backend/.env` and fill in:
+
+```bash
+DEEPSEEK_API_KEY=sk-your-key-here       # Required
+YTDLP_PROXY=http://127.0.0.1:7890       # Optional — for YouTube access
+ALLOWED_ORIGINS=https://your-domain.com # Optional — CORS whitelist in production
+```
+
+```bash
+# 3. Start the application
+docker compose up -d
+
+# 4. Verify both containers are running
+docker compose ps
+# Expected output: backend (Up) + nginx (Up)
+
+# 5. Open your browser
+# http://your-server-ip  (or http://localhost if running locally)
+```
+
+#### Managing the Application
+
+```bash
+# View logs
+docker compose logs -f              # All containers
+docker compose logs -f backend      # Backend only
+docker compose logs -f nginx        # Nginx only
+
+# Restart after .env changes or code updates
+docker compose down
+docker compose up -d --build        # Rebuild images, restart
+
+# Stop the application
+docker compose stop
+
+# Stop and remove containers (data in .env is preserved)
+docker compose down
+```
+
+#### Updating to a New Version
+
+```bash
+git pull                            # Pull latest code
+docker compose down                 # Stop current containers
+docker compose up -d --build        # Rebuild with latest code
+```
+
+#### HTTPS Setup
+
+The default configuration serves HTTP on port 80. For production with HTTPS, add SSL termination. Two approaches:
+
+**Option A — Reverse proxy in front (recommended)**
+
+Use your existing nginx/Caddy on the host to handle SSL and proxy to the Docker nginx container:
+
+```nginx
+# Host nginx example
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:80;  # Docker nginx port
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**Option B — SSL inside Docker**
+
+Mount your certificate and add a 443 server block to `nginx.conf`, then update `docker-compose.yml` to expose port 443.
+
+```yaml
+# docker-compose.yml addition for nginx service
+ports:
+  - "80:80"
+  - "443:443"
+volumes:
+  - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  - ./ssl/cert.pem:/etc/nginx/ssl/cert.pem:ro
+  - ./ssl/key.pem:/etc/nginx/ssl/key.pem:ro
+```
+
+#### Troubleshooting
+
+| Problem | Check |
+|---------|-------|
+| `port 80 already in use` | Another web server is running. Stop it or change the nginx port in `docker-compose.yml` |
+| Backend can't connect to DeepSeek | Verify `DEEPSEEK_API_KEY` in `backend/.env`. Check `docker compose logs backend` |
+| YouTube features don't work | Configure `YTDLP_PROXY` in `backend/.env`, then `docker compose up -d --build` |
+| `ERR_EMPTY_RESPONSE` in browser | DNS or firewall issue. Verify the server IP and port are accessible |
+| Container keeps restarting | `docker compose logs backend` — often a missing `.env` or invalid API key |
+| Rate limit (429) errors | You've hit the per-IP rate limit. Wait 1 minute for the counter to reset |
+
+### Manual Deployment (without Docker)
 
 ```bash
 cd frontend && npm run build      # Output: frontend/dist/
 ```
 
-Serve `frontend/dist/` with nginx and proxy `/api/*` to the FastAPI backend. A production `nginx.conf` template is included in the repository.
-
-**HTTPS**: For SSL termination, configure your reverse proxy (nginx/Caddy) with a certificate. If using the bundled `docker-compose.yml`, mount your certificate and add the 443 server block to `nginx.conf`.
+Serve `frontend/dist/` with nginx and proxy `/api/*` to the FastAPI backend. A production `nginx.conf` template is included in the repository for reference.
 
 ### Proxy Configuration
 

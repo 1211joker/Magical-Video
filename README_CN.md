@@ -154,36 +154,151 @@ npm run dev                       # 开发服务器 http://localhost:5173
 
 Vite 开发服务器自动将 `/api` 请求代理到后端 `localhost:8000`。
 
-### 生产部署
+### 🐳 Docker 部署
 
-**Docker Compose（推荐）**：
+项目包含完整的 Docker Compose 生产部署配置，两个容器协同工作：
 
-```bash
-# 1. 配置环境变量
-cp backend/.env.example backend/.env
-vim backend/.env   # 填入 DEEPSEEK_API_KEY
-
-# 2. 一键部署
-docker compose up -d
-
-# 3. 查看状态
-docker compose ps
-docker compose logs -f
+```
+浏览器 (80端口)
+    │
+    ▼
+┌──────────────────────────┐
+│  nginx (nginx:alpine)    │  ← 静态文件 + 反向代理
+│  /              → dist/  │     gzip 压缩、安全头、SPA 回退
+│  /api/*         → proxy  │
+└──────────┬───────────────┘
+           │ 内部网络
+           ▼
+┌──────────────────────────┐
+│  backend (python:3.12)   │  ← FastAPI + uvicorn
+│  :8000                   │     yt-dlp、DeepSeek、接口限流
+└──────────────────────────┘
 ```
 
-启动两个容器：
-- **backend** — Python FastAPI，内部端口 8000
-- **nginx** — 静态文件 + `/api` 反向代理，端口 80
+#### 前置条件
 
-**手动部署**：
+- **Docker** ≥ 20.10 和 **Docker Compose** ≥ 2.0
+- DeepSeek API 密钥（[platform.deepseek.com](https://platform.deepseek.com/)）
+- （可选）HTTP 代理，如果所在地区无法直连 YouTube
+
+#### 快速开始
+
+```bash
+# 1. 克隆仓库
+git clone https://github.com/1211joker/Magical-Video.git
+cd Magical-Video
+
+# 2. 创建并编辑环境变量文件
+cp backend/.env.example backend/.env
+vim backend/.env
+```
+
+编辑 `backend/.env`，填入：
+
+```bash
+DEEPSEEK_API_KEY=sk-your-key-here       # 必填
+YTDLP_PROXY=http://127.0.0.1:7890       # 可选 — 访问 YouTube 需配置
+ALLOWED_ORIGINS=https://your-domain.com # 可选 — 生产环境 CORS 白名单
+```
+
+```bash
+# 3. 启动应用
+docker compose up -d
+
+# 4. 验证两个容器均在运行
+docker compose ps
+# 预期输出：backend (Up) + nginx (Up)
+
+# 5. 打开浏览器访问
+# http://你的服务器IP  （本地运行则 http://localhost）
+```
+
+#### 日常管理
+
+```bash
+# 查看日志
+docker compose logs -f              # 所有容器
+docker compose logs -f backend      # 仅后端
+docker compose logs -f nginx        # 仅 nginx
+
+# 修改 .env 或代码后重新构建
+docker compose down
+docker compose up -d --build        # 重新构建镜像并启动
+
+# 停止应用
+docker compose stop
+
+# 停止并删除容器（.env 文件不受影响）
+docker compose down
+```
+
+#### 更新到新版本
+
+```bash
+git pull                            # 拉取最新代码
+docker compose down                 # 停止当前容器
+docker compose up -d --build        # 重新构建并启动
+```
+
+#### HTTPS 配置
+
+默认配置使用 HTTP（80 端口）。生产环境需要添加 SSL 证书，两种方式：
+
+**方案 A — 前置反向代理（推荐）**
+
+使用宿主机已有的 nginx/Caddy 处理 SSL，转发到 Docker nginx 容器：
+
+```nginx
+# 宿主机 nginx 示例
+server {
+    listen 443 ssl;
+    server_name your-domain.com;
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:80;  # Docker nginx 端口
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+**方案 B — Docker 内部 SSL**
+
+将证书挂载到容器内，在 `nginx.conf` 中添加 443 监听，并更新 `docker-compose.yml` 暴露 443 端口。
+
+```yaml
+# docker-compose.yml nginx 服务追加
+ports:
+  - "80:80"
+  - "443:443"
+volumes:
+  - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  - ./ssl/cert.pem:/etc/nginx/ssl/cert.pem:ro
+  - ./ssl/key.pem:/etc/nginx/ssl/key.pem:ro
+```
+
+#### 常见问题排查
+
+| 问题 | 检查方法 |
+|------|----------|
+| `80 端口已被占用` | 有其他 Web 服务在运行。停止它或在 `docker-compose.yml` 中修改 nginx 端口 |
+| 后端无法连接 DeepSeek | 检查 `backend/.env` 中的 `DEEPSEEK_API_KEY`，运行 `docker compose logs backend` 查看日志 |
+| YouTube 功能不可用 | 在 `backend/.env` 中配置 `YTDLP_PROXY`，然后 `docker compose up -d --build` 重建 |
+| 浏览器显示空白页 | DNS 或防火墙问题。确认服务器 IP 和端口可访问 |
+| 容器反复重启 | `docker compose logs backend` — 常见原因为缺少 `.env` 或 API Key 无效 |
+| 限流 429 错误 | 已触发单 IP 限流，等待 1 分钟计数器自动重置 |
+
+### 手动部署（不使用 Docker）
 
 ```bash
 cd frontend && npm run build      # 输出到 frontend/dist/
 ```
 
-将 `frontend/dist/` 部署到 nginx，并将 `/api/*` 代理到 FastAPI 后端。仓库中已包含生产环境 `nginx.conf` 模板。
-
-**HTTPS**：配置反向代理（nginx/Caddy）挂载 SSL 证书。如使用 `docker-compose.yml`，挂载证书并在 `nginx.conf` 中添加 443 端口监听。
+将 `frontend/dist/` 部署到 nginx，并将 `/api/*` 代理到 FastAPI 后端。仓库中已包含生产环境 `nginx.conf` 模板供参考。
 
 ### 代理配置
 
