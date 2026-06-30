@@ -75,6 +75,7 @@ Magical-Video/
 │   ├── requirements.txt
 │   ├── .env.example              # 环境变量模板
 │   ├── models/schemas.py         # Pydantic 数据模型
+│   ├── limiter.py                   # 共享 slowapi Limiter 实例
 │   ├── routers/
 │   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
 │   │   ├── download.py           # /api/download
@@ -82,7 +83,14 @@ Magical-Video/
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp 子进程封装
 │       ├── subtitle_service.py   # 字幕提取与解析
-│       └── deepseek_service.py   # DeepSeek API 客户端
+│       ├── deepseek_service.py   # DeepSeek 分析服务
+│       └── deepseek_client.py    # DeepSeek HTTP 客户端（含重试）
+│
+├── nginx.conf                     # 生产环境 nginx 配置
+├── Dockerfile                     # 后端容器镜像
+├── Dockerfile.nginx               # 前端构建 + nginx 镜像
+├── docker-compose.yml             # 多服务编排
+├── .dockerignore
 │
 └── frontend/
     ├── src/
@@ -146,13 +154,36 @@ npm run dev                       # 开发服务器 http://localhost:5173
 
 Vite 开发服务器自动将 `/api` 请求代理到后端 `localhost:8000`。
 
-### 生产构建
+### 生产部署
+
+**Docker Compose（推荐）**：
+
+```bash
+# 1. 配置环境变量
+cp backend/.env.example backend/.env
+vim backend/.env   # 填入 DEEPSEEK_API_KEY
+
+# 2. 一键部署
+docker compose up -d
+
+# 3. 查看状态
+docker compose ps
+docker compose logs -f
+```
+
+启动两个容器：
+- **backend** — Python FastAPI，内部端口 8000
+- **nginx** — 静态文件 + `/api` 反向代理，端口 80
+
+**手动部署**：
 
 ```bash
 cd frontend && npm run build      # 输出到 frontend/dist/
 ```
 
-将 `frontend/dist/` 部署到任意静态文件服务器，并将 `/api/*` 请求代理到 FastAPI 后端。
+将 `frontend/dist/` 部署到 nginx，并将 `/api/*` 代理到 FastAPI 后端。仓库中已包含生产环境 `nginx.conf` 模板。
+
+**HTTPS**：配置反向代理（nginx/Caddy）挂载 SSL 证书。如使用 `docker-compose.yml`，挂载证书并在 `nginx.conf` 中添加 443 端口监听。
 
 ### 代理配置
 
@@ -263,8 +294,44 @@ Cookie 会经过校验，确保包含 `DedeUserID`、`SESSDATA`、`bili_jct` 三
 |------|----------|------|
 | `DEEPSEEK_API_KEY` | 是 | DeepSeek API 密钥 |
 | `YTDLP_PROXY` | 否 | 访问 YouTube 的 HTTP 代理地址 |
+| `ALLOWED_ORIGINS` | 否 | CORS 跨域白名单（逗号分隔）。默认 `*`（开发模式允许所有来源），生产环境设为具体域名 |
+| `YTDLP_NO_CHECK_CERTIFICATES` | 否 | 跳过 yt-dlp SSL 证书验证。默认 `false`（安全），仅在国内网络劫持环境下临时设为 `true` |
 
 复制 `backend/.env.example` 为 `backend/.env` 并填入对应值。
+
+---
+
+## 📋 变更日志
+
+### v0.2.0 — 生产就绪（2026-06-30）
+
+本次更新聚焦安全加固、可靠性提升和生产部署。
+
+**🔴 安全（P0）**：
+- **CORS 白名单**：`ALLOWED_ORIGINS` 环境变量控制允许的来源。默认 `*`（开发模式），生产环境设为具体域名。
+- **接口限流**：接入 `slowapi`，按端点 + IP 分级限流。`/api/analyze-stream` 5次/分、`/api/download` 3次/分、`/api/ask` 10次/分、`/api/parse` 20次/分、`/api/thumbnail` 30次/分。
+- **SSL 证书验证**：yt-dlp 默认启用 SSL 证书验证，通过 `YTDLP_NO_CHECK_CERTIFICATES` 环境变量控制（默认 `false` = 安全）。
+- **nginx Basic Auth**：服务端密码保护整个站点。
+- 新增文件：`backend/limiter.py` — 共享 Limiter 实例，避免循环导入。
+
+**🟠 可靠性（P1）**：
+- **API 重试机制**：DeepSeek API 调用遇到临时故障（429 / 5xx / 超时）自动重试，指数退避（2s → 4s → 8s，最多 3 次）。使用 `tenacity`。不可恢复错误（401 / 402）立即失败。
+- 新增文件：`backend/services/deepseek_client.py` — 带重试装饰器的共享 DeepSeek HTTP 客户端。
+
+**🟡 架构（P2）**：
+- **Docker Compose**：双容器编排 — Python 后端 + nginx 提供静态前端和 `/api` 反向代理。
+- **生产 nginx 配置**：包含 gzip 压缩、SPA 路由回退、SSE 长连接支持（`proxy_read_timeout 300s`）、安全头、`client_max_body_size 10m`。
+- 新增文件：`Dockerfile`、`Dockerfile.nginx`、`docker-compose.yml`、`nginx.conf`、`.dockerignore`。
+
+**🐛 Bug 修复**：
+- 修复 `/api/download` 限流失效问题——slowapi 参数名冲突（`request: DownloadRequest` 改名为 `body: DownloadRequest`）。
+
+### v0.1.0 — 初始版本
+
+- AI 视频分析：四维度结构化输出 + 交互式思维导图
+- AI 问答：基于字幕内容的对话问答
+- 视频下载：支持分辨率选择
+- YouTube + Bilibili 双平台支持 + 代理配置
 
 ---
 

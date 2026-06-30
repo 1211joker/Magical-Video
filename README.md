@@ -75,6 +75,7 @@ Magical-Video/
 │   ├── requirements.txt
 │   ├── .env.example              # Template for required env vars
 │   ├── models/schemas.py         # Pydantic models (request/response)
+│   ├── limiter.py                   # Shared slowapi Limiter instance
 │   ├── routers/
 │   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
 │   │   ├── download.py           # /api/download
@@ -82,7 +83,14 @@ Magical-Video/
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp subprocess wrapper
 │       ├── subtitle_service.py   # Subtitle extraction and parsing
-│       └── deepseek_service.py   # DeepSeek API client
+│       ├── deepseek_service.py   # DeepSeek analysis service
+│       └── deepseek_client.py    # DeepSeek HTTP client with retry
+│
+├── nginx.conf                     # Production nginx configuration
+├── Dockerfile                     # Backend container image
+├── Dockerfile.nginx               # Frontend build + nginx image
+├── docker-compose.yml             # Multi-service orchestration
+├── .dockerignore
 │
 └── frontend/
     ├── src/
@@ -148,11 +156,34 @@ The Vite dev server proxies `/api` requests to `localhost:8000` automatically.
 
 ### Production
 
+**Docker Compose (recommended)**:
+
+```bash
+# 1. Configure environment
+cp backend/.env.example backend/.env
+vim backend/.env   # Fill in DEEPSEEK_API_KEY
+
+# 2. One-command deploy
+docker compose up -d
+
+# 3. Check status
+docker compose ps
+docker compose logs -f
+```
+
+This starts two containers:
+- **backend** — Python FastAPI on internal port 8000
+- **nginx** — Static files + `/api` reverse proxy on port 80
+
+**Manual deploy**:
+
 ```bash
 cd frontend && npm run build      # Output: frontend/dist/
 ```
 
-Serve `frontend/dist/` with any static file server and proxy `/api/*` to the FastAPI backend.
+Serve `frontend/dist/` with nginx and proxy `/api/*` to the FastAPI backend. A production `nginx.conf` template is included in the repository.
+
+**HTTPS**: For SSL termination, configure your reverse proxy (nginx/Caddy) with a certificate. If using the bundled `docker-compose.yml`, mount your certificate and add the 443 server block to `nginx.conf`.
 
 ### Proxy Configuration
 
@@ -263,8 +294,44 @@ The cookies are validated to ensure they contain `DedeUserID`, `SESSDATA`, and `
 |----------|----------|-------------|
 | `DEEPSEEK_API_KEY` | Yes | DeepSeek API key |
 | `YTDLP_PROXY` | No | HTTP proxy for YouTube access |
+| `ALLOWED_ORIGINS` | No | CORS allowed origins (comma-separated). Default: `*` (all origins in dev). Set to your domain(s) in production |
+| `YTDLP_NO_CHECK_CERTIFICATES` | No | Skip SSL cert verification for yt-dlp. Default: `false`. Only set to `true` in regions with SSL interference |
 
 Copy `backend/.env.example` to `backend/.env` and fill in the values.
+
+---
+
+## 📋 Changelog
+
+### v0.2.0 — Production Readiness (2026-06-30)
+
+This release focuses on security hardening, reliability improvements, and production deployment.
+
+**🔴 Security (P0)**:
+- **CORS whitelist**: `ALLOWED_ORIGINS` env var controls allowed origins. Default `*` for dev; set specific domain(s) in production.
+- **Rate limiting**: Added `slowapi` with per-endpoint IP-based rate limits. `/api/analyze-stream` 5/min, `/api/download` 3/min, `/api/ask` 10/min, `/api/parse` 20/min, `/api/thumbnail` 30/min.
+- **SSL certificate verification**: yt-dlp SSL verification now enabled by default. Controlled via `YTDLP_NO_CHECK_CERTIFICATES` env var (default `false`).
+- **nginx Basic Auth**: Server-level password protection for the entire site.
+- New file: `backend/limiter.py` — shared Limiter instance to avoid circular imports.
+
+**🟠 Reliability (P1)**:
+- **API retry logic**: DeepSeek API calls now retry on transient failures (429 / 5xx / timeout) with exponential backoff (2s → 4s → 8s, max 3 attempts). Uses `tenacity`. Non-retryable errors (401 / 402) fail immediately.
+- New file: `backend/services/deepseek_client.py` — shared DeepSeek HTTP client with retry decorator.
+
+**🟡 Architecture (P2)**:
+- **Docker Compose**: Two-container orchestration — Python backend + nginx serving static frontend with `/api` reverse proxy.
+- **Production nginx config**: Includes gzip, SPA fallback, SSE long-connection support (`proxy_read_timeout 300s`), security headers, and `client_max_body_size 10m`.
+- New files: `Dockerfile`, `Dockerfile.nginx`, `docker-compose.yml`, `nginx.conf`, `.dockerignore`.
+
+**🐛 Bug Fix**:
+- Fixed `/api/download` rate limit not triggering due to slowapi parameter name conflict (`request: DownloadRequest` renamed to `body: DownloadRequest`).
+
+### v0.1.0 — Initial Release
+
+- AI video analysis with four-dimension structured output and interactive mind map
+- AI Q&A grounded in subtitle content
+- Video download with resolution selection
+- YouTube + Bilibili support with proxy configuration
 
 ---
 
