@@ -2,7 +2,7 @@
 分析相关 API 路由
 """
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from urllib.parse import unquote
 import httpx
@@ -10,6 +10,7 @@ from models.schemas import ParseRequest, ParseResponse
 from services.ytdlp_service import parse_video_info
 from services.subtitle_service import extract_subtitle_text
 from services.deepseek_service import analyze_subtitles
+from limiter import limiter
 
 router = APIRouter(prefix="/api", tags=["analyze"])
 
@@ -21,7 +22,8 @@ async def health_check():
 
 
 @router.post("/parse", response_model=ParseResponse)
-async def parse_video(req: ParseRequest):
+@limiter.limit("20/minute")
+async def parse_video(req: ParseRequest, request: Request):
     """
     解析视频链接，返回元数据（标题、封面、时长等）。
 
@@ -47,7 +49,8 @@ async def parse_video(req: ParseRequest):
 
 
 @router.get("/thumbnail")
-async def proxy_thumbnail(url: str):
+@limiter.limit("30/minute")
+async def proxy_thumbnail(url: str, request: Request):
     """
     封面图代理 — 解决 B站 / YouTube 图片防盗链问题。
     """
@@ -81,7 +84,8 @@ async def proxy_thumbnail(url: str):
 
 
 @router.post("/analyze-stream")
-async def analyze_video_stream(req: ParseRequest):
+@limiter.limit("5/minute")
+async def analyze_video_stream(req: ParseRequest, request: Request):
     """
     AI 分析视频字幕，通过 SSE 实时推送进度。
 

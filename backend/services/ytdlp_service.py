@@ -10,7 +10,7 @@ import os
 import shutil
 import tempfile
 from typing import Optional
-from config import YTDLP_PROXY, YTDLP_TIMEOUT, DOWNLOAD_TIMEOUT
+from config import YTDLP_PROXY, YTDLP_TIMEOUT, DOWNLOAD_TIMEOUT, YTDLP_NO_CHECK_CERTIFICATES
 from models.schemas import ParseResponse, FormatInfo
 
 
@@ -103,9 +103,10 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
             "--dump-json",
             "--no-playlist",
             "--flat-playlist",
-            "--no-check-certificates",
             url
         ]
+        if YTDLP_NO_CHECK_CERTIFICATES:
+            cmd.insert(4, "--no-check-certificates")
 
         # YouTube: 用 Android 客户端绕过 SABR 流式拦截
         if platform == "youtube":
@@ -277,9 +278,10 @@ async def _get_download_filename(
         "--print", "filename",
         "-f", format_id,
         "--no-playlist",
-        "--no-check-certificates",
         url
     ]
+    if YTDLP_NO_CHECK_CERTIFICATES:
+        cmd.insert(4, "--no-check-certificates")
     if platform == "youtube":
         cmd.extend(["--extractor-args", "youtube:player_client=android"])
     if cookies_file:
@@ -359,9 +361,10 @@ async def download_video(
             "-o", output_template,
             "--format-sort", "vcodec:avc",  # 优先 H.264（兼容性好），没有时自动降级
             "--no-playlist",
-            "--no-check-certificates",
             url,
         ]
+        if YTDLP_NO_CHECK_CERTIFICATES:
+            cmd.insert(5, "--no-check-certificates")
         # YouTube: 用 Android 客户端绕过 SABR 流式拦截
         # ref: https://github.com/yt-dlp/yt-dlp/issues/12482
         if platform == "youtube":

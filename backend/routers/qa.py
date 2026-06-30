@@ -4,9 +4,11 @@ AI 问答路由 — 基于视频字幕内容的问答
 import json
 import re as _re
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from models.schemas import QaRequest, QaResponse
-from config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL
+from config import DEEPSEEK_API_KEY
+from limiter import limiter
+from services.deepseek_client import call_deepseek_api, RetryableError
 
 router = APIRouter(prefix="/api", tags=["qa"])
 
@@ -63,7 +65,8 @@ QA_SYSTEM_PROMPT = """你是一个友好、耐心的视频内容问答伙伴。�
 
 
 @router.post("/ask", response_model=QaResponse)
-async def ask_question(req: QaRequest):
+@limiter.limit("10/minute")
+async def ask_question(req: QaRequest, request: Request):
     """
     基于视频字幕内容回答用户问题。
 
@@ -135,22 +138,26 @@ async def ask_question(req: QaRequest):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(DEEPSEEK_API_URL, json=body, headers=headers)
+        resp = await call_deepseek_api(body, headers, timeout=60)
 
-            if resp.status_code != 200:
-                error_detail = resp.text[:300]
-                if resp.status_code == 401:
-                    raise HTTPException(status_code=500, detail="DeepSeek API Key 无效")
-                elif resp.status_code == 429:
-                    raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
-                elif resp.status_code == 402:
-                    raise HTTPException(status_code=402, detail="DeepSeek 账户余额不足")
-                else:
-                    raise HTTPException(status_code=502, detail=f"AI 服务异常（{resp.status_code}）")
+        if resp.status_code != 200:
+            error_detail = resp.text[:300]
+            if resp.status_code == 401:
+                raise HTTPException(status_code=500, detail="DeepSeek API Key 无效")
+            elif resp.status_code == 429:
+                raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+            elif resp.status_code == 402:
+                raise HTTPException(status_code=402, detail="DeepSeek 账户余额不足")
+            else:
+                raise HTTPException(status_code=502, detail=f"AI 服务异常（{resp.status_code}）")
 
-            data = resp.json()
+        data = resp.json()
 
+    except RetryableError as e:
+        if e.status_code == 429:
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
+        else:
+            raise HTTPException(status_code=502, detail=f"AI 服务异常（{e.status_code}）")
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="AI 响应超时，请重试")
     except HTTPException:

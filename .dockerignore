@@ -1,0 +1,11 @@
+# Docker
+node_modules/
+backend/__pycache__/
+backend/.env
+*.pyc
+__pycache__/
+.git/
+.gitignore
+*.md
+docs/
+.claude/

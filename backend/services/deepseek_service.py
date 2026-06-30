@@ -7,7 +7,8 @@ import httpx
 from models.schemas import (
     AnalysisResult, OutlineItem, KeyPoint, ConclusionItem
 )
-from config import DEEPSEEK_API_KEY, DEEPSEEK_API_URL, AI_ANALYSIS_TIMEOUT
+from config import DEEPSEEK_API_KEY, AI_ANALYSIS_TIMEOUT
+from services.deepseek_client import call_deepseek_api, RetryableError
 
 
 # AI 分析的系统提示词 — 思维导图为主，其他维度为辅
@@ -122,21 +123,26 @@ async def analyze_subtitles(
         "stream": False,
     }
 
-    async with httpx.AsyncClient(timeout=AI_ANALYSIS_TIMEOUT, proxy=None) as client:
-        resp = await client.post(DEEPSEEK_API_URL, json=body, headers=headers)
+    try:
+        resp = await call_deepseek_api(body, headers, timeout=AI_ANALYSIS_TIMEOUT)
+    except RetryableError as e:
+        if e.status_code == 429:
+            raise RuntimeError("AI 请求过于频繁，请稍后重试")
+        else:
+            raise RuntimeError(f"AI 服务异常（{e.status_code}），请稍后重试")
+    except httpx.TimeoutException:
+        raise RuntimeError("AI 响应超时，请重试")
 
-        if resp.status_code != 200:
-            error_detail = resp.text[:300]
-            if resp.status_code == 401:
-                raise RuntimeError("DeepSeek API Key 无效，请检查 .env 中的 DEEPSEEK_API_KEY")
-            elif resp.status_code == 429:
-                raise RuntimeError("AI 请求过于频繁，请稍后重试")
-            elif resp.status_code == 402:
-                raise RuntimeError("DeepSeek 账户余额不足，请充值后重试")
-            else:
-                raise RuntimeError(f"AI 分析失败（{resp.status_code}），请稍后重试")
+    if resp.status_code != 200:
+        error_detail = resp.text[:300]
+        if resp.status_code == 401:
+            raise RuntimeError("DeepSeek API Key 无效，请检查 .env 中的 DEEPSEEK_API_KEY")
+        elif resp.status_code == 402:
+            raise RuntimeError("DeepSeek 账户余额不足，请充值后重试")
+        else:
+            raise RuntimeError(f"AI 分析失败（{resp.status_code}），请稍后重试")
 
-        data = resp.json()
+    data = resp.json()
 
     try:
         content = data["choices"][0]["message"]["content"]

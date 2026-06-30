@@ -10,6 +10,12 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 # 网络代理（访问 YouTube 用，可选）
 YTDLP_PROXY = os.getenv("YTDLP_PROXY", "")
 
+# yt-dlp SSL 证书验证（默认开启，仅在国内网络劫持环境下临时关闭）
+YTDLP_NO_CHECK_CERTIFICATES = os.getenv("YTDLP_NO_CHECK_CERTIFICATES", "false").lower() == "true"
+
+# CORS 配置
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")  # 生产环境设置具体域名，逗号分隔多个
+
 # 限流配置
 AI_RATE_LIMIT_PER_MIN = 10  # 每个 IP 每分钟最多 10 次 AI 分析
 MAX_CONCURRENT_TASKS = 2  # 同一用户同时最多 2 个任务
