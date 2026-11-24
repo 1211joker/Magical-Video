@@ -9,15 +9,14 @@
       </button>
     </div>
     <div ref="container" class="mindmap-inner">
-      <svg ref="svgEl" class="mindmap-svg" width="100%" :style="{ height: svgHeight + 'px' }"></svg>
+      <svg class="mindmap-svg" width="100%" :style="{ height: svgHeight + 'px' }"></svg>
     </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { Transformer } from 'markmap-lib'
-import { Markmap } from 'markmap-view'
+import { deriveOptions, Markmap } from 'markmap-view'
 
 const props = defineProps({
   data: {
@@ -35,64 +34,56 @@ function getSvgEl() {
   return container.value?.querySelector('svg') || null
 }
 
-// 把 AI 返回的 JSON 脑图结构转成 markmap 认识的 markdown
-function toMarkdown(node, level = 0) {
-  const depth = Math.min(level + 1, 6)
-  const prefix = '#'.repeat(depth)
-  let md = `${prefix} ${node.content}\n`
-  if (node.children && node.children.length) {
-    for (const child of node.children) {
-      md += toMarkdown(child, level + 1)
-    }
-  }
-  return md
+function nodeLabel(node) {
+  return typeof node?.content === 'string' ? node.content.replace(/\s+/g, ' ').trim() : ''
 }
 
-function render() {
-  const svg = getSvgEl()
-  if (!svg || !props.data) {
-    console.warn('[MindMap] render skipped', { hasSvg: !!svg, hasData: !!props.data })
-    return
+function toMarkmapNode(node, depth = 0) {
+  const label = nodeLabel(node) || '视频分析'
+  const children = []
+
+  // 旧分析结果也使用同样的三层结构，只保留各主题下最先列出的不同要点。
+  if (depth < 2 && Array.isArray(node.children)) {
+    const labels = new Set()
+    const limit = depth === 0 ? 5 : 3
+    for (const child of node.children) {
+      const childLabel = nodeLabel(child)
+      if (!childLabel || labels.has(childLabel)) continue
+      labels.add(childLabel)
+      children.push(toMarkmapNode(child, depth + 1))
+      if (children.length === limit) break
+    }
   }
 
-  // 清掉上次渲染的
-  svg.innerHTML = ''
+  // markmap 用 HTML 渲染节点，字幕中的标记按纯文本显示。
+  const content = label.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  return { content, children }
+}
 
+async function render() {
+  const svg = getSvgEl()
+  if (!svg || !props.data) return
+
+  currentMM?.destroy()
   try {
-    const markdown = toMarkdown(props.data)
-    const transformer = new Transformer()
-    const { root } = transformer.transform(markdown)
-
-    currentMM = Markmap.create(
-      svg,
-      {
-        autoFit: true,
-        colorFreezeLevel: 2,
-        duration: 400,
-        maxWidth: 280,
-        paddingX: 20,
-        spacingHorizontal: 80,
-        spacingVertical: 10,
-        initialExpandLevel: 2,
-      },
-      root
-    )
-
-    // 动态计算 SVG 高度：等渲染完成后读取内容边界
-    nextTick(() => {
-      requestAnimationFrame(() => {
-        const svgEl = getSvgEl()
-        if (!svgEl) return
-        // 查找 markmap 的 <g> 元素获取实际高度
-        const g = svgEl.querySelector('g')
-        if (g) {
-          const bbox = g.getBBox()
-          if (bbox.height > 0) {
-            svgHeight.value = Math.max(400, Math.ceil(bbox.height + 40))
-          }
-        }
-      })
+    const map = Markmap.create(svg, {
+      ...deriveOptions({ colorFreezeLevel: 2 }),
+      autoFit: true,
+      duration: 400,
+      maxWidth: 240,
+      paddingX: 12,
+      spacingHorizontal: 48,
+      spacingVertical: 10,
+      initialExpandLevel: -1,
     })
+    currentMM = map
+    await map.setData(toMarkmapNode(props.data))
+    if (currentMM !== map) return
+
+    const { y1, y2 } = map.state.rect
+    svgHeight.value = Math.max(400, Math.ceil(y2 - y1 + 40))
+    await nextTick()
+    if (currentMM === map) await map.fit()
   } catch (err) {
     console.error('MindMap render error:', err)
   }
@@ -124,22 +115,13 @@ function downloadSVG() {
   URL.revokeObjectURL(url)
 }
 
-onMounted(() => {
-  nextTick(render)
-})
+onMounted(render)
 
-watch(() => props.data, () => {
-  nextTick(render)
-}, { deep: true })
+watch(() => props.data, render, { deep: true, flush: 'post' })
 
 onBeforeUnmount(() => {
-  if (currentMM) {
-    currentMM = null
-  }
-  const svg = getSvgEl()
-  if (svg) {
-    svg.innerHTML = ''
-  }
+  currentMM?.destroy()
+  currentMM = null
 })
 </script>
 

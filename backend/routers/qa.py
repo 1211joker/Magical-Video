@@ -19,6 +19,8 @@ QA_SYSTEM_PROMPT = """你是一个友好、耐心的视频内容问答伙伴。�
 
 你会收到视频的字幕原文以及 AI 分析摘要（含概述、大纲、关键要点、总结）。用户会基于这些内容向你提问。
 
+收到追问时，先用近期对话理解用户的指代。例如，用户紧接着问「第二点能再展开讲讲吗」，先定位上一条相关回答里的第二点，再结合字幕补充细节。如果指代仍有歧义，简短询问用户指的是哪一点。对话用于理解指代，关于视频内容的回答以字幕为依据。
+
 ## 思维链思考流程（内部推理，不在最终回答中显式标注步骤编号）
 
 在回答每个问题之前，请按以下步骤在脑中推理：
@@ -75,7 +77,8 @@ async def ask_question(req: QaRequest, request: Request):
         Body: {
             "question": "视频中提到的三种方法分别是什么？",
             "subtitle_text": "...",
-            "analysis_summary": "..."
+            "analysis_summary": "...",
+            "chat_history": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
         }
     """
     if not DEEPSEEK_API_KEY:
@@ -118,9 +121,10 @@ async def ask_question(req: QaRequest, request: Request):
     messages = [{"role": "system", "content": QA_SYSTEM_PROMPT}]
 
     # 如果有历史对话，加入上下文
-    for msg in req.chat_history[-10:]:  # 最多保留最近 10 轮
-        if msg.get("role") in ("user", "assistant") and msg.get("content"):
-            messages.append({"role": msg["role"], "content": msg["content"]})
+    for msg in req.chat_history[-10:]:  # 最近 10 条消息，通常是 5 轮问答
+        role, content = msg.get("role"), msg.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            messages.append({"role": role, "content": content})
 
     messages.append({"role": "user", "content": user_message})
 

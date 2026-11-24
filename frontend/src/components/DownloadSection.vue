@@ -37,15 +37,15 @@
     </button>
 
     <!-- 状态消息 -->
-    <p v-if="statusMessage" class="status-msg" :class="statusClass">
+    <p v-if="statusMessage" class="status-msg" :class="statusClass" role="status">
       {{ statusMessage }}
     </p>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
-import { downloadVideo } from '../api/index.js'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { prepareDownload } from '../api/index.js'
 
 const props = defineProps({
   formats: { type: Array, required: true },
@@ -57,25 +57,25 @@ const props = defineProps({
 const selectedFormat = ref(props.formats[0]?.format_id || 'best')
 
 // 状态管理
-const downloading = ref(false)
+const status = ref('idle')
+const downloading = computed(() => status.value === 'preparing')
 const statusMessage = ref('')
-const statusType = ref('')  // 'success' | 'error'
+let downloadController = null
 
 const btnClass = computed(() => ({
   'is-downloading': downloading.value,
-  'is-success': statusType.value === 'success',
-  'is-error': statusType.value === 'error'
+  'is-success': status.value === 'handedOff',
+  'is-error': status.value === 'error'
 }))
 
 const btnText = computed(() => {
-  if (downloading.value) return '⏳ 正在下载...'
-  if (statusType.value === 'success') return '✅ 下载完成'
+  if (downloading.value) return '正在准备视频…'
   return '⬇️ 下载视频'
 })
 
 const statusClass = computed(() => ({
-  'msg-success': statusType.value === 'success',
-  'msg-error': statusType.value === 'error'
+  'msg-success': status.value === 'handedOff',
+  'msg-error': status.value === 'error'
 }))
 
 function formatSize(bytes) {
@@ -88,33 +88,43 @@ function formatSize(bytes) {
 async function handleDownload() {
   if (downloading.value) return
 
-  downloading.value = true
-  statusType.value = ''
-  statusMessage.value = '正在下载，请稍候，浏览器将弹出保存对话框...'
+  status.value = 'preparing'
+  statusMessage.value = '服务端正在准备文件，请保持页面打开。'
+  downloadController = new AbortController()
+  const signal = downloadController.signal
 
   try {
-    await downloadVideo(props.url, selectedFormat.value, props.cookies, true)
-    statusType.value = 'success'
-    statusMessage.value = '下载完成！文件已保存到你的电脑。'
-    // 3 秒后恢复按钮状态
-    setTimeout(() => {
-      statusType.value = ''
-      statusMessage.value = ''
-    }, 3000)
+    const url = await prepareDownload(props.url, selectedFormat.value, props.cookies, signal)
+    signal.throwIfAborted()
+
+    const link = document.createElement('a')
+    link.href = url
+    link.download = ''
+    document.body.append(link)
+    link.click()
+    link.remove()
+
+    status.value = 'handedOff'
+    statusMessage.value = '已交给浏览器下载，请在浏览器的下载列表查看进度。'
   } catch (err) {
-    statusType.value = 'error'
-    statusMessage.value = err.message || '下载失败，请重试'
+    if (signal.aborted) {
+      status.value = 'idle'
+      statusMessage.value = ''
+    } else {
+      status.value = 'error'
+      statusMessage.value = err.message || '下载失败，请重试'
+    }
   } finally {
-    downloading.value = false
+    downloadController = null
   }
 }
+
+onBeforeUnmount(() => downloadController?.abort())
 
 // 当 formats 变化时（重新解析），重置为第一个
 watch(() => props.formats, (newFormats) => {
   if (newFormats && newFormats.length > 0) {
     selectedFormat.value = newFormats[0].format_id
-    statusType.value = ''
-    statusMessage.value = ''
   }
 })
 </script>

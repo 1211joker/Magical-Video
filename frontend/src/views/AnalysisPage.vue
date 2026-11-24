@@ -5,6 +5,13 @@
       <p class="page-desc">粘贴视频链接，AI 自动分析字幕内容，生成结构化摘要</p>
     </header>
 
+    <YouTubeNetworkDialog
+      v-if="networkIssue"
+      :message="networkIssue.message"
+      @dismiss="networkIssue = null"
+      @retry="retryYouTubeNetwork"
+    />
+
     <!-- B站 Cookies 设置（可折叠） -->
     <CookieGuide ref="cookieGuideRef" @update:cookies="onCookiesUpdate" />
 
@@ -58,6 +65,9 @@
     <!-- 视频信息 + 分析 + 下载 -->
     <Transition name="slide-fade">
       <div v-if="videoInfo && videoInfo.platform !== 'unsupported'" class="result-area">
+        <p v-if="videoInfo.youtube_connection" class="network-status" role="status">
+          {{ videoInfo.youtube_connection === 'proxy' ? 'YouTube 已通过代理连通' : 'YouTube 网络已连通' }}
+        </p>
         <VideoInfo :info="videoInfo" />
 
         <!-- AI 分析按钮 -->
@@ -134,9 +144,10 @@
         <!-- 视频下载 -->
         <Transition name="slide-fade">
           <DownloadSection
-            v-if="videoInfo && videoInfo.formats && videoInfo.formats.length > 0"
+            v-if="parsedVideoUrl && videoInfo?.formats?.length"
+            :key="parsedVideoUrl"
             :formats="videoInfo.formats"
-            :url="urlInput"
+            :url="parsedVideoUrl"
             :cookies="cookies"
           />
         </Transition>
@@ -152,11 +163,14 @@ import VideoInfo from '../components/VideoInfo.vue'
 import CookieGuide from '../components/CookieGuide.vue'
 import AnalysisResult from '../components/AnalysisResult.vue'
 import DownloadSection from '../components/DownloadSection.vue'
+import YouTubeNetworkDialog from '../components/YouTubeNetworkDialog.vue'
 
 const urlInput = ref('')
 const parsing = ref(false)
 const videoInfo = ref(null)
+const parsedVideoUrl = computed(() => videoInfo.value?.source_url || videoInfo.value?.webpage_url)
 const errorMsg = ref('')
+const networkIssue = ref(null)
 const cookies = ref(null)
 const cookieGuideRef = ref(null)
 
@@ -230,8 +244,21 @@ function onCookiesUpdate(cookiesText) {
   cookies.value = cookiesText
 }
 
+function showYouTubeNetworkIssue(code, message, retry) {
+  if (code === 'youtube_network_unavailable' || code === 'youtube_proxy_unavailable') {
+    networkIssue.value = { message, retry }
+  }
+}
+
+function retryYouTubeNetwork() {
+  const { retry } = networkIssue.value
+  networkIssue.value = null
+  retry()
+}
+
 async function handleParse() {
-  if (!urlInput.value.trim()) return
+  const url = urlInput.value.trim()
+  if (!url || parsing.value) return
 
   parsing.value = true
   errorMsg.value = ''
@@ -241,15 +268,16 @@ async function handleParse() {
   progressSteps.length = 0
 
   try {
-    const result = await parseVideo(urlInput.value, cookies.value)
+    const result = await parseVideo(url, cookies.value)
     if (result.platform === 'unsupported') {
       errorMsg.value = result.description || '暂不支持此平台'
       videoInfo.value = null
     } else {
-      videoInfo.value = result
+      videoInfo.value = { ...result, source_url: url }
     }
   } catch (err) {
     errorMsg.value = err.message || '解析失败，请检查链接'
+    showYouTubeNetworkIssue(err.code, errorMsg.value, handleParse)
     if (errorMsg.value.includes('cookies') || errorMsg.value.includes('B站')) {
       cookieGuideRef.value?.open()
     }
@@ -259,7 +287,7 @@ async function handleParse() {
 }
 
 function handleAnalyze() {
-  if (!videoInfo.value) return
+  if (!parsedVideoUrl.value || analyzing.value) return
 
   analyzing.value = true
   analysisError.value = ''
@@ -273,9 +301,12 @@ function handleAnalyze() {
   )
 
   abortAnalysis = startAnalysis(
-    urlInput.value,
+    parsedVideoUrl.value,
     cookies.value,
     (event) => {
+      if (event.status === 'failed') {
+        showYouTubeNetworkIssue(event.code, event.message, handleAnalyze)
+      }
       const idx = progressSteps.findIndex(s => s.step === event.step)
       if (idx >= 0) {
         progressSteps[idx].status = event.status
@@ -312,6 +343,7 @@ function handleAnalyze() {
     (err) => {
       analyzing.value = false
       analysisError.value = err.message || '分析请求失败'
+      showYouTubeNetworkIssue(err.code, analysisError.value, handleAnalyze)
       const active = progressSteps.find(s => s.status === 'processing')
       if (active) {
         active.status = 'failed'
@@ -336,6 +368,12 @@ onBeforeUnmount(() => {
 <style scoped>
 .analysis-page {
   padding-top: 32px;
+}
+
+.network-status {
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
 }
 
 .page-header {

@@ -4,12 +4,13 @@
 import json
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 import httpx
 from models.schemas import ParseRequest, ParseResponse
 from services.ytdlp_service import parse_video_info
 from services.subtitle_service import extract_subtitle_text
 from services.deepseek_service import analyze_subtitles
+from services.youtube_network import YouTubeNetworkUnavailable, get_youtube_connection
 from limiter import limiter
 
 router = APIRouter(prefix="/api", tags=["analyze"])
@@ -42,6 +43,8 @@ async def parse_video(req: ParseRequest, request: Request):
     try:
         result = await parse_video_info(req.url, cookies=req.cookies)
         return result
+    except YouTubeNetworkUnavailable:
+        raise
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -57,18 +60,18 @@ async def proxy_thumbnail(url: str, request: Request):
     image_url = unquote(url)
 
     # 根据图片域名选择 Referer 和代理策略
-    is_youtube = "ytimg.com" in image_url or "youtube.com" in image_url
+    hostname = urlsplit(image_url).hostname or ""
+    is_youtube = any(hostname == domain or hostname.endswith("." + domain) for domain in ("ytimg.com", "youtube.com"))
     headers = {
         "Referer": "https://www.youtube.com/" if is_youtube else "https://www.bilibili.com",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     }
 
-    # YouTube 图片 CDN 国内需走代理，否则 504
-    from config import YTDLP_PROXY
-    proxy = YTDLP_PROXY if (is_youtube and YTDLP_PROXY) else None
+    connection = await get_youtube_connection() if is_youtube else None
+    proxy = connection.proxy if connection else None
 
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=proxy) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=proxy, trust_env=not is_youtube) as client:
             resp = await client.get(image_url, headers=headers)
             if resp.status_code != 200:
                 raise HTTPException(status_code=404, detail="封面图获取失败")
@@ -153,6 +156,8 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
                 "subtitle_text": subtitle_data.plain_text,
             })
 
+        except YouTubeNetworkUnavailable as error:
+            yield _sse("error", "failed", str(error), code=error.code)
         except Exception as e:
             yield _sse("error", "failed", f"分析过程出错: {str(e)}")
 
@@ -166,9 +171,11 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
     )
 
 
-def _sse(step: str, status: str, message: str, result: dict = None) -> str:
+def _sse(step: str, status: str, message: str, result: dict = None, *, code: str = None) -> str:
     """生成一条 SSE 事件字符串"""
     data = {"step": step, "status": status, "message": message}
     if result is not None:
         data["result"] = result
+    if code:
+        data["code"] = code
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"

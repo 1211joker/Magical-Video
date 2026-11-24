@@ -271,7 +271,14 @@ function handleKeydown(e) {
 // 发送问题
 async function handleSend() {
   const question = questionInput.value.trim()
-  if (!question || loading.value) return
+  if (!question || loading.value || !analysisData.value) return
+
+  // 只带已获得回答的问答，避免把失败的请求当成对话上下文。
+  const chatHistory = messages.value
+    .filter((message, index, history) =>
+      message.role === 'assistant' || history[index + 1]?.role === 'assistant'
+    )
+    .slice(-10)
 
   // 添加用户消息
   messages.value.push({ role: 'user', content: question })
@@ -322,7 +329,8 @@ async function handleSend() {
     const result = await askQuestion(
       question,
       analysisData.value.subtitle_text,
-      summary
+      summary,
+      chatHistory
     )
     messages.value.push({ role: 'assistant', content: result.answer })
   } catch (err) {

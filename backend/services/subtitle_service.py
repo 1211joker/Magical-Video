@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from config import YTDLP_PROXY, YTDLP_TIMEOUT
+from services.youtube_network import get_youtube_connection
+from services.ytdlp_service import identify_platform
 
 logger = logging.getLogger(__name__)
 
@@ -270,18 +272,21 @@ async def _extract_youtube_subs(url: str) -> Optional[SubtitleData]:
     if not video_id:
         return None
 
+    connection = await get_youtube_connection()
     try:
+        from requests import Session
         from youtube_transcript_api import YouTubeTranscriptApi
-        # 配置代理：国内网络需代理才能访问 YouTube 字幕 API
-        proxy_config = None
-        if YTDLP_PROXY:
-            from youtube_transcript_api.proxies import GenericProxyConfig
-            proxy_config = GenericProxyConfig(http_url=YTDLP_PROXY, https_url=YTDLP_PROXY)
-        api = YouTubeTranscriptApi(proxy_config=proxy_config)
-        transcript = await asyncio.to_thread(
-            api.fetch, video_id, LANG_PRIORITY_YT
-        )
-        snippets = list(transcript)
+        from youtube_transcript_api.proxies import GenericProxyConfig
+
+        def fetch_transcript():
+            with Session() as session:
+                session.trust_env = False
+                proxy = connection.proxy
+                proxy_config = GenericProxyConfig(http_url=proxy, https_url=proxy) if proxy else None
+                api = YouTubeTranscriptApi(proxy_config=proxy_config, http_client=session)
+                return list(api.fetch(video_id, LANG_PRIORITY_YT))
+
+        snippets = await asyncio.to_thread(fetch_transcript)
         if not snippets:
             return None
 
@@ -382,10 +387,11 @@ async def extract_subtitle_text(
 
     无字幕时返回 None。
     """
-    if re.search(r"youtube\.com|youtu\.be", url, re.IGNORECASE):
+    platform = identify_platform(url)
+    if platform == "youtube":
         return await _extract_youtube_subs(url)
 
-    if re.search(r"bilibili\.com|b23\.tv", url, re.IGNORECASE):
+    if platform == "bilibili":
         return await _extract_bilibili_subs(url, cookies)
 
     return None

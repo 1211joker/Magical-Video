@@ -8,17 +8,22 @@ import re
 import sys
 import os
 import shutil
+import signal
 import tempfile
+from contextlib import suppress
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 from config import YTDLP_PROXY, YTDLP_TIMEOUT, DOWNLOAD_TIMEOUT, YTDLP_NO_CHECK_CERTIFICATES
 from models.schemas import ParseResponse, FormatInfo
+from services.youtube_network import YouTubeConnection, get_youtube_connection
 
 
-# 平台识别规则（用最简单的 URL 关键词匹配）
-PLATFORM_RULES = [
-    ("youtube", [r"youtube\.com", r"youtu\.be"]),
-    ("bilibili", [r"bilibili\.com", r"b23\.tv"]),
-]
+PLATFORM_DOMAINS = {
+    "youtube": ("youtube.com", "youtu.be"),
+    "bilibili": ("bilibili.com", "b23.tv"),
+}
 
 # 已知不支持的平台
 UNSUPPORTED_PLATFORMS = [
@@ -32,10 +37,14 @@ def identify_platform(url: str) -> str:
     通过 URL 判断是哪个平台。
     返回 "youtube" / "bilibili" / "unsupported"
     """
-    for platform, patterns in PLATFORM_RULES:
-        for pattern in patterns:
-            if re.search(pattern, url, re.IGNORECASE):
-                return platform
+    url = url.strip()
+    try:
+        hostname = urlsplit(url if "://" in url or url.startswith("//") else f"//{url}").hostname or ""
+    except ValueError:
+        return "unsupported"
+    for platform, domains in PLATFORM_DOMAINS.items():
+        if any(hostname == domain or hostname.endswith("." + domain) for domain in domains):
+            return platform
     return "unsupported"
 
 
@@ -45,6 +54,12 @@ def check_unsupported(url: str) -> Optional[str]:
         if re.search(pattern, url, re.IGNORECASE):
             return name
     return None
+
+
+def _proxy_args(connection: Optional[YouTubeConnection]) -> list[str]:
+    if connection is not None:
+        return ["--proxy", connection.proxy or ""]
+    return ["--proxy", YTDLP_PROXY] if YTDLP_PROXY else []
 
 
 async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResponse:
@@ -61,30 +76,20 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
     cookies 参数：B站需要登录才能获取完整信息。用户把浏览器的 cookies
     粘贴进来，我们临时写成文件传给 yt-dlp，用完即删，不留存。
     """
-    # 先检查是否是不支持的平台
-    unsupported_name = check_unsupported(url)
-    if unsupported_name:
+    platform = identify_platform(url)
+    if platform == "unsupported":
+        unsupported_name = check_unsupported(url)
         return ParseResponse(
             platform="unsupported",
             title="",
             duration=0,
             thumbnail="",
-            description=f"暂不支持{unsupported_name}",
+            description=f"暂不支持{unsupported_name}" if unsupported_name else "暂不支持此平台，目前只支持 YouTube 和 B站",
             webpage_url=url,
             formats=[]
         )
 
-    platform = identify_platform(url)
-    if platform == "unsupported":
-        return ParseResponse(
-            platform="unsupported",
-            title="",
-            duration=0,
-            thumbnail="",
-            description="暂不支持此平台，目前只支持 YouTube 和 B站",
-            webpage_url=url,
-            formats=[]
-        )
+    connection = await get_youtube_connection() if platform == "youtube" else None
 
     # 把 cookies 文本写入临时文件（用后即删）
     cookies_file = None
@@ -103,7 +108,6 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
             "--dump-json",
             "--no-playlist",
             "--flat-playlist",
-            url
         ]
         if YTDLP_NO_CHECK_CERTIFICATES:
             cmd.insert(4, "--no-check-certificates")
@@ -116,12 +120,11 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
         if cookies_file:
             cmd.extend(["--cookies", cookies_file])
 
-        if YTDLP_PROXY:
-            cmd.extend(["--proxy", YTDLP_PROXY])
+        cmd.extend(_proxy_args(connection))
 
         # 执行命令
         process = await asyncio.create_subprocess_exec(
-            *cmd,
+            *cmd, "--", url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -170,7 +173,8 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
             thumbnail=thumbnail,
             description=description[:500],
             webpage_url=webpage_url,
-            formats=formats
+            formats=formats,
+            youtube_connection=connection.mode if connection else None,
         )
 
     except asyncio.TimeoutError:
@@ -260,69 +264,22 @@ def _extract_download_error(stderr_bytes: bytes) -> str:
     return result if result else "未知错误"
 
 
-def _sanitize_filename(name: str) -> str:
-    """把文件名中的非法字符替换为下划线"""
-    return re.sub(r'[<>:"/\\|?*]', '_', name).strip() or "video"
+@dataclass(frozen=True)
+class PreparedVideo:
+    path: Path
 
-
-async def _get_download_filename(
-    url: str, format_id: str, cookies_file: Optional[str] = None, platform: str = "unsupported"
-) -> str:
-    """
-    查询 yt-dlp 会输出什么文件名。
-    跑一次 --print filename（只查询元数据，不下载），拿到文件名后返回。
-    失败时返回 "video.mp4" 兜底。
-    """
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "--print", "filename",
-        "-f", format_id,
-        "--no-playlist",
-        url
-    ]
-    if YTDLP_NO_CHECK_CERTIFICATES:
-        cmd.insert(4, "--no-check-certificates")
-    if platform == "youtube":
-        cmd.extend(["--extractor-args", "youtube:player_client=android"])
-    if cookies_file:
-        cmd.extend(["--cookies", cookies_file])
-    if YTDLP_PROXY:
-        cmd.extend(["--proxy", YTDLP_PROXY])
-
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=YTDLP_TIMEOUT)
-        if process.returncode == 0 and stdout:
-            name = stdout.decode("utf-8", errors="replace").strip()
-            if name:
-                return _sanitize_filename(name)
-    except Exception:
-        pass
-
-    return "video.mp4"
+    async def remove(self):
+        await asyncio.to_thread(shutil.rmtree, self.path.parent, ignore_errors=True)
 
 
 async def download_video(
     url: str,
     format_id: str = "best",
     cookies: Optional[str] = None,
-    has_audio: bool = True,
-):
-    """
-    下载视频到临时文件。
-
-    流程：
-    1. 构建格式选择器 + 文件名查询
-    2. yt-dlp 下载到临时目录 → 成功后才返回
-    3. 返回 (filepath, filename, temp_dir) 供路由层用 FileResponse 发送
-
-    简单可靠：yt-dlp 自己处理 cookies / ffmpeg / 风控，后端不插手。
-    """
+) -> PreparedVideo:
+    """准备完整的视频并把临时文件的所有权移交给调用方。"""
     platform = identify_platform(url)
+    connection = await get_youtube_connection() if platform == "youtube" else None
 
     # -- 1. 格式选择器（yt-dlp 原生语法）--
     # format_id 现在是分辨率字符串如 "1080p"，不是原始 format_id
@@ -338,20 +295,16 @@ async def download_video(
 
     # -- 2. cookies 临时文件（整次下载共用一份）--
     cookies_file = None
-    if cookies:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        )
-        tmp.write(cookies)
-        tmp.close()
-        cookies_file = tmp.name
-
     temp_dir = None
+    process = None
+    completed = False
     try:
-        # -- 3. 查询 yt-dlp 会输出的文件名 --
-        filename = await _get_download_filename(url, format_selector, cookies_file, platform)
+        if cookies:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as cookie_file:
+                cookies_file = cookie_file.name
+                cookie_file.write(cookies)
 
-        # -- 4. 创建临时目录，下载到那里 --
+        # -- 3. 创建临时目录，下载到那里 --
         temp_dir = tempfile.mkdtemp(prefix="ytdlp_dl_")
         output_template = os.path.join(temp_dir, "%(title)s.%(ext)s")
 
@@ -359,9 +312,9 @@ async def download_video(
             sys.executable, "-m", "yt_dlp",
             "-f", format_selector,
             "-o", output_template,
+            "--print", "after_move:%(filepath)j",
             "--format-sort", "vcodec:avc",  # 优先 H.264（兼容性好），没有时自动降级
             "--no-playlist",
-            url,
         ]
         if YTDLP_NO_CHECK_CERTIFICATES:
             cmd.insert(5, "--no-check-certificates")
@@ -371,13 +324,13 @@ async def download_video(
             cmd.extend(["--extractor-args", "youtube:player_client=android"])
         if cookies_file:
             cmd.extend(["--cookies", cookies_file])
-        if YTDLP_PROXY:
-            cmd.extend(["--proxy", YTDLP_PROXY])
+        cmd.extend(_proxy_args(connection))
 
         process = await asyncio.create_subprocess_exec(
-            *cmd,
+            *cmd, "--", url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=os.name == "posix",
         )
 
         # 等 yt-dlp 完整下载完成（大文件需要时间）
@@ -389,30 +342,33 @@ async def download_video(
             error_text = _extract_download_error(stderr)
             raise RuntimeError(f"下载失败：{error_text}")
 
-        # -- 5. 找到下载好的文件 --
-        files = os.listdir(temp_dir)
-        if not files:
+        # -- 4. 找到下载好的文件 --
+        output_path, _, _ = stdout.decode("utf-8").strip().partition("\n")
+        if not output_path:
             raise RuntimeError("下载完成但未找到输出文件")
-
-        filepath = os.path.join(temp_dir, files[0])
-        filename = os.path.basename(filepath)  # 用实际输出的文件名
-
-        return filepath, filename, temp_dir
+        filepath = Path(json.loads(output_path)).resolve()
+        if filepath.parent != Path(temp_dir).resolve() or not filepath.is_file():
+            raise RuntimeError("下载完成但未找到有效的视频文件")
+        completed = True
+        return PreparedVideo(filepath)
 
     except RuntimeError:
-        # 下载失败 → 清理临时目录
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
         raise
-    except asyncio.TimeoutError:
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(f"下载超时（超过 {DOWNLOAD_TIMEOUT} 秒），文件可能过大或网络较慢")
-    except Exception as e:
-        if temp_dir and os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(f"下载异常：{str(e)}")
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(f"下载超时（超过 {DOWNLOAD_TIMEOUT} 秒），文件可能过大或网络较慢") from error
+    except Exception as error:
+        raise RuntimeError(f"下载异常：{error}") from error
     finally:
+        if process is not None and process.returncode is None:
+            with suppress(ProcessLookupError):
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            await process.communicate()
+        if temp_dir and not completed:
+            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
         # cookies 用完即删
-        if cookies_file and os.path.exists(cookies_file):
-            os.unlink(cookies_file)
+        if cookies_file:
+            with suppress(FileNotFoundError):
+                os.unlink(cookies_file)

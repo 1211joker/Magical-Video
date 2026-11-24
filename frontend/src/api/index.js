@@ -1,5 +1,10 @@
 const API_BASE = '/api'
 
+async function readApiError(response, fallback) {
+  const detail = await response.json().catch(() => ({}))
+  return Object.assign(new Error(detail.detail || detail.error || fallback), { code: detail.code })
+}
+
 /**
  * 解析视频链接 — 获取元数据（标题、封面、时长等）
  */
@@ -14,8 +19,7 @@ export async function parseVideo(url, cookies = null) {
     body: JSON.stringify(body)
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '解析失败')
+    throw await readApiError(res, '解析失败')
   }
   return res.json()
 }
@@ -45,8 +49,7 @@ export function startAnalysis(url, cookies, onEvent, onError) {
     signal: controller.signal
   }).then(async (response) => {
     if (!response.ok) {
-      const err = await response.json().catch(() => ({ detail: response.statusText }))
-      onError(new Error(err.detail || '分析请求失败'))
+      onError(await readApiError(response, '分析请求失败'))
       return
     }
 
@@ -102,11 +105,12 @@ export function startAnalysis(url, cookies, onEvent, onError) {
  *   question         - 用户问题
  *   subtitleText     - 字幕全文（作为回答依据）
  *   analysisSummary  - AI 分析结果摘要（辅助理解上下文）
+ *   chatHistory      - 之前的问答消息，按时间顺序排列
  *
  * 返回：
  *   { answer: string }
  */
-export async function askQuestion(question, subtitleText, analysisSummary) {
+export async function askQuestion(question, subtitleText, analysisSummary, chatHistory = []) {
   const res = await fetch(`${API_BASE}/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -114,6 +118,7 @@ export async function askQuestion(question, subtitleText, analysisSummary) {
       question,
       subtitle_text: subtitleText,
       analysis_summary: analysisSummary,
+      chat_history: chatHistory,
     })
   })
   if (!res.ok) {
@@ -124,59 +129,38 @@ export async function askQuestion(question, subtitleText, analysisSummary) {
 }
 
 /**
- * 下载视频 — POST 请求后端代理下载，接收 Blob 流后触发浏览器保存。
- *
- * 参数：
- *   url       - 视频链接
- *   formatId  - 清晰度 format_id（如 "137+140"）
- *   cookies   - B站 cookies（可选）
- *   hasAudio  - 格式是否已包含音频（纯视频流为 false）
- *
- * 返回：
- *   { success: true, filename: string }
- *
- * 抛出：
- *   Error — 下载失败时，message 为错误描述
+ * 提交下载任务并等待文件准备完毕，返回供浏览器直接访问的下载地址。
  */
-export async function downloadVideo(url, formatId, cookies, hasAudio = true) {
-  const response = await fetch(`${API_BASE}/download`, {
+export async function prepareDownload(url, formatId, cookies, signal) {
+  signal?.throwIfAborted()
+  const jobsUrl = `${API_BASE}/download/jobs`
+  // 先取得任务编号，页面即使在提交期间离开也能取消已创建的任务。
+  const response = await fetch(jobsUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, format_id: formatId, cookies, has_audio: hasAudio })
+    body: JSON.stringify({ url, format_id: formatId, cookies }),
   })
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: '下载失败，请重试' }))
-    throw new Error(err.detail || '下载失败，请重试')
-  }
+  const { job_id: jobId } = await readDownloadResponse(response)
+  const jobUrl = `${jobsUrl}/${jobId}`
 
   try {
-    // 从响应头提取文件名
-    const disposition = response.headers.get('Content-Disposition') || ''
-    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/)
-    const normalMatch = disposition.match(/filename="?(.+?)"?\s*(;|$)/)
-    let filename = 'video.mp4'
-    if (utf8Match) {
-      filename = decodeURIComponent(utf8Match[1])
-    } else if (normalMatch) {
-      filename = normalMatch[1]
+    while (true) {
+      const statusResponse = await fetch(jobUrl, { cache: 'no-store', signal })
+      const status = await readDownloadResponse(statusResponse)
+      signal?.throwIfAborted()
+      if (status.status === 'ready') return status.download_url
+      await new Promise(resolve => setTimeout(resolve, 1000))
     }
-
-    // 读取整个响应体为 Blob
-    const blob = await response.blob()
-
-    // 触发浏览器"另存为"
-    const blobUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = blobUrl
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
-
-    return { success: true, filename }
-  } catch (e) {
-    throw new Error('下载失败：网络异常或文件损坏')
+  } catch (error) {
+    // 取消请求失败时，后端仍会按任务有效期清理。
+    void fetch(jobUrl, { method: 'DELETE', keepalive: true }).catch(() => {})
+    throw error
   }
+}
+
+async function readDownloadResponse(response) {
+  if (!response.ok) {
+    throw await readApiError(response, '下载失败，请重试')
+  }
+  return response.json()
 }

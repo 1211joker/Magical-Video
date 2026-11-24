@@ -25,7 +25,7 @@ Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube �
 3. **AI 分析**：字幕文本发送至 DeepSeek（`deepseek-v4-flash` 模型），系统提示词要求输出详实、有原文依据的结构化结果。分析进度通过 SSE 实时推送到前端。
 4. **结果展示**：选项卡式界面呈现概述、大纲、要点、结论四个维度，并包含基于 markmap 的交互式思维导图。
 
-系统提示词要求模型保留原文中的术语、数字、案例名称和直接引用，避免过度概括。思维导图要求至少 30 个节点，覆盖 4 层深度。
+大纲和要点保留原文中的术语、数字、案例和直接引用。思维导图将相近内容归到同一主题，最多展示 3 层，打开时展开全部节点。
 
 ---
 
@@ -43,7 +43,7 @@ AI 分析完成后，可以就视频内容向 AI 提问，获取基于字幕原�
 
 ## 📥 辅助功能：视频下载
 
-输入链接后可直接下载视频，支持选择可用的分辨率和格式。后端通过 yt-dlp 下载完成后将文件流式传输至浏览器。
+输入链接后可以选择可用的分辨率和格式。服务端用 yt-dlp 准备文件，随后由浏览器的下载管理器接收文件并显示进度。
 
 **当前限制**：YouTube 下载因使用 Android 客户端绕过 SABR 风控，最高仅支持 360p（详见已知问题）。
 
@@ -78,7 +78,7 @@ Magical-Video/
 │   ├── limiter.py                   # 共享 slowapi Limiter 实例
 │   ├── routers/
 │   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
-│   │   ├── download.py           # /api/download
+│   │   ├── download.py           # /api/download 和浏览器下载任务
 │   │   └── qa.py                 # /api/ask — AI 问答
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp 子进程封装
@@ -302,29 +302,19 @@ cd frontend && npm run build      # 输出到 frontend/dist/
 
 ### 代理配置
 
-国内网络无法直连 YouTube，需要配置代理才能使用 YouTube 相关的解析、字幕提取、封面图加载等功能。如果不配置代理，仅 Bilibili 视频可以正常使用。
+解析 YouTube 链接时，后端先检测 YouTube 连通性。若设置了 `YTDLP_PROXY`，优先验证该代理。自动模式先试直连，直连失败后尝试后端能发现的系统代理和 `HTTPS_PROXY` 等环境代理。解析、封面、字幕和下载使用检测成功的线路。
 
-**第一步：启动本地代理**
+连接失败时页面会弹窗提示，并提供重新检测入口。本机部署可以在运行后端的设备上开启 VPN 或系统代理。在线部署的 YouTube 请求由服务端发出，代理需要在服务端配置。
 
-使用任意 HTTP 代理客户端（Clash、V2Ray、Shadowsocks 等）。大多数代理工具会在本地暴露一个 HTTP 端口，如 `http://127.0.0.1:7890` 或 `http://127.0.0.1:1080`。
-
-**第二步：在 `.env` 中配置**
-
-编辑 `backend/.env`，设置 `YTDLP_PROXY` 变量：
+如果代理客户端未向系统公开地址，可在 `backend/.env` 中指定它的 HTTP 或 SOCKS5 端口，然后重启后端。以下示例使用本机代理端口。
 
 ```bash
-YTDLP_PROXY=http://127.0.0.1:7890   # 替换为你的代理地址
+YTDLP_PROXY=http://127.0.0.1:7890
+# 或使用本机的 SOCKS5 端口
+# YTDLP_PROXY=socks5h://127.0.0.1:7891
 ```
 
-**代理覆盖范围：**
-
-| 组件 | 代理方式 | 用途 |
-|------|---------|------|
-| yt-dlp（视频信息 + 下载） | `--proxy` 命令行参数 | 获取视频元数据和下载视频 |
-| `/api/thumbnail`（封面图代理） | `httpx.AsyncClient(proxy=...)` | 代理加载 YouTube 封面图 |
-| `youtube-transcript-api`（字幕提取） | `GenericProxyConfig` | 从 YouTube 字幕 API 获取字幕数据 |
-
-三个通道都必须走代理才能完整支持 YouTube。`YTDLP_PROXY` 变量在所有组件中一致使用。DeepSeek API 调用**不走代理**（国内直连 `api.deepseek.com` 更快）。
+在 Docker 中，`127.0.0.1` 指向后端容器。填写后端容器能访问的代理地址。
 
 ---
 
@@ -352,7 +342,7 @@ YTDLP_PROXY=http://127.0.0.1:7890   # 替换为你的代理地址
 1. 在"AI解析"页面，粘贴视频链接并点击"解析视频"。
 2. 视频信息加载后，向下滚动到下载区域。
 3. 在清晰度网格中选择需要的分辨率。
-4. 点击"下载视频"，浏览器将弹出保存对话框。
+4. 点击「下载视频」并保持页面打开。文件准备完成后，在浏览器的下载列表查看进度。
 
 ### 获取 Bilibili Cookies
 
@@ -375,7 +365,7 @@ Cookie 会经过校验，确保包含 `DedeUserID`、`SESSDATA`、`bili_jct` 三
 
 **Bilibili 字幕提取失败**。`yt-dlp --write-subs` 对 Bilibili 不产生字幕文件，`dump-json` 也不包含字幕 URL，导致 AI 分析管线中断。改为通过 yt-dlp 直接下载 VTT 文件再用 Python 解析，同时返回纯文本（供 AI 使用）和带时间戳的片段（供前端展示）。
 
-**AI 分析质量问题**。早期提示词导致 AI 输出过于概括，丢失关键信息。重写系统提示词，强制要求四维度结构化输出，必须引用原文证据，保留术语和数字，思维导图至少 30 个节点。
+**AI 分析质量问题**。早期提示词导致 AI 输出过于概括，丢失关键信息。大纲和关键要点保留原文证据、术语和数字，思维导图用简短节点呈现核心主题。
 
 **长视频 AI 超时**。超过 30 分钟的视频字幕可能超过 8000 字符，导致 30 秒超时。将字符上限提升到 25000，max tokens 提升到 10000，截断策略改为首 20% 加中 60% 加尾 20%，保证覆盖视频全程。
 
@@ -397,7 +387,7 @@ Cookie 会经过校验，确保包含 `DedeUserID`、`SESSDATA`、`bili_jct` 三
 
 **无下载历史记录**。没有本地或服务端的历史记录，重复分析会浪费 AI 配额。
 
-**流式下载稳定性**。yt-dlp 子进程到 StreamingResponse 的管道在网络不稳定时可能中断，大文件尤其容易出问题。
+**大文件准备**。浏览器开始接收前，服务端需要把整个视频准备到临时目录，因此仍需要足够的临时磁盘空间。
 
 **分析选项固定**。用户无法自定义 AI 分析侧重点（例如只提取技术细节或只输出结论）。
 
@@ -408,7 +398,7 @@ Cookie 会经过校验，确保包含 `DedeUserID`、`SESSDATA`、`bili_jct` 三
 | 变量 | 是否必填 | 说明 |
 |------|----------|------|
 | `DEEPSEEK_API_KEY` | 是 | DeepSeek API 密钥 |
-| `YTDLP_PROXY` | 否 | 访问 YouTube 的 HTTP 代理地址 |
+| `YTDLP_PROXY` | 否 | 访问 YouTube 的 HTTP 或 SOCKS5 代理地址 |
 | `ALLOWED_ORIGINS` | 否 | CORS 跨域白名单（逗号分隔）。默认 `*`（开发模式允许所有来源），生产环境设为具体域名 |
 | `YTDLP_NO_CHECK_CERTIFICATES` | 否 | 跳过 yt-dlp SSL 证书验证。默认 `false`（安全），仅在国内网络劫持环境下临时设为 `true` |
 

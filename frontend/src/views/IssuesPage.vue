@@ -23,7 +23,7 @@
           </div>
           <p class="issue-desc">{{ item.description }}</p>
           <div class="issue-solution">
-            <span class="solution-label">解决方案：</span>
+            <span class="solution-label">解决方案</span>
             <span>{{ item.solution }}</span>
           </div>
         </div>
@@ -38,7 +38,7 @@
           <line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
-        待解决 &amp; 项目不足
+        待解决与项目限制
       </h2>
 
       <div class="issue-list">
@@ -58,6 +58,24 @@
 <script setup>
 const solvedIssues = [
   {
+    id: 17,
+    title: '大文件由浏览器直接下载',
+    description: '旧版页面把完整视频读成 Blob 后才触发保存，文件越大，页面内存占用越高。',
+    solution: '文件准备期间，页面只查询任务状态。准备完成后，浏览器的下载管理器直接接收文件并显示传输进度。',
+  },
+  {
+    id: 15,
+    title: 'AI 问答现在可以连续追问',
+    description: '旧版问答只发送当前问题，遇到「第二点能再展开讲讲吗」这样的追问时，模型看不到上一轮回答。',
+    solution: '同一聊天会发送最近 5 轮已完成的问答。用真实视频打乱三条建议的原顺序后追问，DeepSeek 正确展开了上一轮回答里重新编号的第二点。',
+  },
+  {
+    id: 16,
+    title: '思维导图精简并默认全部展开',
+    description: '旧版导图把例子和细节拆成许多节点，默认折叠部分分支，浏览时需要逐个打开。',
+    solution: '将相近内容归到同一主题，保留最多 5 个主主题，每个主题最多 3 个支撑要点。打开时自动展开并适配画布。真实视频测试中，21 个节点首次打开便全部可见。',
+  },
+  {
     id: 1,
     title: 'B站 412/403 拦截',
     description: 'B站对无 cookies 请求返回 412 或 403，导致无法获取视频信息和字幕。使用浏览器导出的 Netscape 格式 cookies 进行认证。',
@@ -65,15 +83,15 @@ const solvedIssues = [
   },
   {
     id: 2,
-    title: 'YouTube SABR 流式拦截 (403 Forbidden)',
-    description: 'YouTube SABR（Server And Browser Rendering）机制对默认 web client 返回 streaming 403，阻止下载。',
-    solution: '切换为 Android player client 绕过 SABR：--extractor-args "youtube:player_client=android"。代价是仅能获取 360p 格式。',
+    title: 'YouTube 部分视频解析时出现 403',
+    description: '早期使用默认 Web 客户端时，部分视频的可下载格式无法获取。',
+    solution: '解析和下载使用 yt-dlp 的 Android 客户端配置。可选清晰度取决于平台返回的格式。',
   },
   {
     id: 3,
-    title: 'B站字幕提取崩溃（--write-subs 无输出）',
-    description: 'yt-dlp 的 --write-subs 和 --write-auto-subs 对 B站 不生效，dump-json 中也不包含字幕 URL，导致 AI 分析步骤因缺少字幕而崩溃。',
-    solution: '改用 yt-dlp --write-subs 直接下载 VTT 文件到临时目录，再用 Python 读取文件内容。重写 subtitle_service 同时返回纯文本（给 AI）+ 结构化片段（给前端）。',
+    title: 'B站字幕提取失败',
+    description: '早期流程依赖视频元数据中的字幕地址，部分视频缺少该字段，分析无法继续。',
+    solution: '使用 yt-dlp 将可用字幕下载到临时目录，再解析 VTT、JSON 等格式。字幕服务提供给 AI 的纯文本，也返回供页面显示的带时间戳片段。',
   },
   {
     id: 4,
@@ -83,9 +101,9 @@ const solvedIssues = [
   },
   {
     id: 5,
-    title: 'AI 分析超时',
+    title: '长视频分析超时过早',
     description: '长视频字幕可能超过 8000 字，AI 分析超时（30s）。',
-    solution: '扩展 max_chars 到 15000，max_tokens 到 4000，截断策略改为首 20% + 中 60% + 尾 20% 覆盖视频全程；超时从 30s 提高到 60s。',
+    solution: '字幕超过 25,000 字符时从首、中、尾三段取样。模型输出上限设为 10,000 tokens，分析请求的超时参数设为 120 秒。',
   },
   {
     id: 6,
@@ -97,13 +115,13 @@ const solvedIssues = [
     id: 7,
     title: 'emoji 跨平台显示不一致',
     description: 'Windows / macOS / Linux 对 emoji 渲染差异大，部分 emoji 在某些平台上显示为方框或风格不一致。',
-    solution: '全站替换为 Feather 风格 SVG 内联图标，统一 stroke-width="2"，颜色跟随当前文字色（currentColor），无跨平台差异。',
+    solution: '主要操作图标使用 Feather 风格的内联 SVG，颜色跟随主题文字，保持不同平台上的样式一致。',
   },
   {
     id: 8,
     title: '前端单页面巨石架构',
     description: '所有功能（链接解析、AI 分析、视频下载）集中在一个 App.vue 中，代码 400+ 行，缺乏导航结构。',
-    solution: '引入 vue-router，拆分为四页面（首页/AI解析/视频下载/问题及优化），App.vue 变布局壳。',
+    solution: '使用 Vue Router 管理首页、AI 解析、AI 问答和问题及优化四个页面。App.vue 负责共用布局。',
   },
   {
     id: 9,
@@ -115,7 +133,7 @@ const solvedIssues = [
     id: 10,
     title: 'Q&A 传递给 AI 的上下文信息不完整',
     description: 'Q&A 请求中 analysis_summary 字段只包含概述和总结，缺少内容大纲和关键要点，导致 AI 回答缺乏足够上下文支撑。',
-    solution: 'enhance analysis_summary 构造逻辑，向 AI 传递完整四维度分析结果：概述 + 内容大纲（含时间段）+ 关键要点（含原文证据）+ 总结。帮助 AI 更准确地定位视频中的相关信息。',
+    solution: '问答请求同时发送概述、带时间段的大纲、附原文证据的关键要点和总结，供模型定位相关字幕。',
   },
   {
     id: 11,
@@ -125,9 +143,9 @@ const solvedIssues = [
   },
   {
     id: 12,
-    title: 'YouTube 封面图 / 字幕提取 / AI 分析代理不一致',
-    description: 'Bilibili 正常但 YouTube 封面图不显示（504）、字幕提取超时、AI 分析 504。根因是 yt-dlp 走了代理，但 httpx 封面图代理和 youtube-transcript-api 均未走代理，国内直连 YouTube 服务超时。',
-    solution: '三通道统一走代理：封面图代理根据域名自动切换（YouTube → 使用 YTDLP_PROXY + YouTube Referer）；字幕提取传入 GenericProxyConfig；AI 分析显式 proxy=None 确保直连。修复 Vite 代理超时（5分钟）和 DeepSeek API 超时（120s）。',
+    title: 'YouTube 视频、封面和字幕的代理配置不一致',
+    description: '早期代理配置只用于 yt-dlp，封面与字幕请求可能因为连不上 YouTube 而超时。',
+    solution: '后端验证直连或代理是否可用，解析、封面、字幕和下载共用检测成功的线路。连接失败时，页面会弹窗提示并提供重试入口。',
   },
   {
     id: 13,
@@ -146,27 +164,20 @@ const solvedIssues = [
 const pendingIssues = [
   {
     id: 101,
-    title: 'YouTube 高清下载受限（仅 360p）',
-    description: 'Android player client 虽然能绕过 SABR，但缺少 GVS PO Token 无法获取 HD DASH 格式（720p+）。需要实现 PO Token 生成逻辑。',
-    impact: 'YouTube 用户无法下载高清视频，体验打折。',
+    title: 'YouTube 高清下载选项可能缺失',
+    description: '当前使用 yt-dlp 的 Android 客户端配置，部分视频返回的下载格式较少。',
+    impact: '若平台未返回高清格式，页面只能提供已有清晰度。',
   },
   {
     id: 102,
-    title: '不支持批量下载',
-    description: '当前仅支持单链接输入，无法批量处理播放列表或多个链接。',
-    impact: '用户需要逐个粘贴链接，使用效率低。',
-  },
-  {
-    id: 103,
-    title: '不支持播放列表解析',
-    description: 'YouTube 播放列表链接仅解析列表页面而非视频内容。',
-    impact: '遇到播放列表链接时用户体验差。',
+    title: '批量处理和播放列表支持',
+    description: '当前按单个视频处理链接，用户需要逐个解析或下载。',
   },
   {
     id: 104,
-    title: '流式下载稳定性不足',
-    description: '当前 yt-dlp → stdout → StreamingResponse → 前端 Blob 的流式代理架构，在网络不稳定时容易中途失败，且有内存占用问题。',
-    impact: '大文件下载容易失败，需要重试。',
+    title: '大文件需要服务器临时磁盘空间',
+    description: '服务端先准备完整视频，再由浏览器接收。准备期间页面会显示等待状态。',
+    impact: '大文件需要更多临时磁盘空间，浏览器开始接收前也可能等得更久。',
   },
   {
     id: 105,
@@ -176,21 +187,14 @@ const pendingIssues = [
   },
   {
     id: 106,
-    title: '无下载历史记录',
-    description: '没有本地或服务端记录已分析/已下载的视频。',
-    impact: '用户无法查看历史操作，重复分析浪费 AI 配额。',
+    title: '缺少分析与下载历史',
+    description: '浏览器会保留最近一次分析结果，目前没有历史列表来查找更早的分析或下载。',
+    impact: '回看更早的视频分析可能需要再次调用 AI。',
   },
   {
     id: 107,
-    title: 'B站 高画质需会员 cookies',
-    description: 'B站 1080p+ 和付费视频需要大会员 cookies，免费用户仅能下载较低画质。',
-    impact: '非会员用户体验受限。',
-  },
-  {
-    id: 108,
-    title: 'AI 问答不支持多轮对话',
-    description: '虽然后端 Q&A 接口预留了 chat_history 字段，但前端目前每次提问都是独立请求，不携带历史对话上下文，无法进行追问或延续上一轮的讨论。',
-    impact: '用户无法进行连续深入对话，每次都要重新描述背景。',
+    title: 'B站部分画质和视频需要账号权限',
+    description: '可用画质和视频取决于登录 Cookie 对应账号的权限。',
   },
 ]
 </script>
@@ -297,6 +301,7 @@ const pendingIssues = [
 }
 
 .solution-label {
+  margin-right: 0.5em;
   font-weight: 700;
   color: var(--text-primary);
 }

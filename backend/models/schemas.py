@@ -2,7 +2,7 @@
 Pydantic 数据模型 — 定义前后端交互的数据格式
 """
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 
 
 # ========== 请求模型 ==========
@@ -33,6 +33,7 @@ class ParseResponse(BaseModel):
     description: str
     webpage_url: str        # 原始视频页面链接
     formats: list[FormatInfo] = []  # 可选清晰度列表
+    youtube_connection: Optional[Literal["direct", "proxy"]] = None
 
 
 # ========== AI 分析结果模型 ==========
@@ -90,7 +91,7 @@ class QaRequest(BaseModel):
     question: str                       # 用户问题
     subtitle_text: str                  # 字幕全文（作为回答依据）
     analysis_summary: str = ""          # AI 分析结果摘要（辅助理解上下文）
-    chat_history: list[dict] = []       # 历史对话记录（预留多轮对话）
+    chat_history: list[dict] = []         # 之前的用户消息和回答，按时间顺序排列
 
 
 class QaResponse(BaseModel):
@@ -111,6 +112,15 @@ class ErrorResponse(BaseModel):
 class DownloadRequest(BaseModel):
     """下载视频请求"""
     url: str
-    format_id: str = "best"     # yt-dlp 格式选择器，如 "137+140"
+    format_id: str = "best"     # 页面选择的分辨率，如 "720p"
     cookies: Optional[str] = None
-    has_audio: bool = True      # 所选格式是否已包含音频（纯视频流需后端合并）
+    has_audio: bool = True      # 保留旧客户端请求参数，音轨由下载服务选择。
+
+
+class DownloadJobStarted(BaseModel):
+    job_id: str
+
+
+class DownloadJobStatus(BaseModel):
+    status: Literal["preparing", "ready"]
+    download_url: Optional[str] = None

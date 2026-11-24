@@ -25,7 +25,7 @@ The primary workflow takes a video URL and produces a structured analysis in fou
 3. **AI Analysis**: The subtitle text is sent to DeepSeek (`deepseek-v4-flash`) with a system prompt that enforces detailed, evidence-backed output. Progress is streamed to the frontend via SSE.
 4. **Result Display**: The analysis is rendered in a tabbed interface (Overview, Outline, Key Points, Conclusions) with an interactive mind map powered by markmap.
 
-The system prompt instructs the model to preserve technical terms, numbers, case studies, and direct quotes from the source material. The mind map is required to have at least 30 nodes across 4 levels of depth.
+The outline and key points retain relevant terms, numbers, examples, and quotes. The mind map groups related ideas into up to three levels and opens fully expanded.
 
 ---
 
@@ -43,7 +43,7 @@ The Q&A system prompt instructs the model to base answers strictly on subtitle c
 
 ## 📥 Secondary: Video Download
 
-The application can also download videos directly. Given a URL, it queries available formats and resolutions, then uses yt-dlp to download the selected format. The file is streamed to the browser as a download.
+The application queries available formats and resolutions, then uses yt-dlp to prepare the selected video in temporary storage. The browser's download manager receives the file and shows transfer progress.
 
 **Current limitation**: YouTube downloads are capped at 360p due to the Android player client workaround for SABR blocking (see Known Issues).
 
@@ -78,7 +78,7 @@ Magical-Video/
 │   ├── limiter.py                   # Shared slowapi Limiter instance
 │   ├── routers/
 │   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
-│   │   ├── download.py           # /api/download
+│   │   ├── download.py           # /api/download and browser download jobs
 │   │   └── qa.py                 # /api/ask — AI Q&A endpoint
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp subprocess wrapper
@@ -302,29 +302,19 @@ Serve `frontend/dist/` with nginx and proxy `/api/*` to the FastAPI backend. A p
 
 ### Proxy Configuration
 
-If you're in a region where YouTube is inaccessible, you need a proxy to use YouTube-related features (parsing, subtitles, thumbnails). Without a proxy, only Bilibili videos will work.
+The backend checks YouTube connectivity when parsing a link. It checks an explicit `YTDLP_PROXY` first. In automatic mode it tries the direct connection, then proxies exposed by the server's system or environment, such as `HTTPS_PROXY`. Parsing, thumbnails, subtitles, and downloads use the verified route.
 
-**Step 1: Set up a local proxy**
+If the check fails, the page explains the problem and offers a retry. With a local deployment, enable the VPN or system proxy on the device running the backend. With a hosted deployment, configure the proxy on the server that sends the YouTube requests.
 
-Use any HTTP proxy client (Clash, V2Ray, Shadowsocks, etc.) running on your machine. Most proxy tools expose an HTTP endpoint like `http://127.0.0.1:7890` or `http://127.0.0.1:1080`.
-
-**Step 2: Configure the environment variable**
-
-In `backend/.env`, set the `YTDLP_PROXY` variable:
+If the proxy client does not expose its address to the system, set its HTTP or SOCKS5 port in `backend/.env` and restart the backend.
 
 ```bash
-YTDLP_PROXY=http://127.0.0.1:7890   # Replace with your proxy address
+YTDLP_PROXY=http://127.0.0.1:7890
+# Or use the local SOCKS5 port
+# YTDLP_PROXY=socks5h://127.0.0.1:7891
 ```
 
-**What this proxy covers:**
-
-| Component | Proxy Source | Purpose |
-|-----------|-------------|---------|
-| yt-dlp (video info + download) | `--proxy` CLI flag | Fetches video metadata and downloads |
-| `/api/thumbnail` (thumbnail images) | `httpx.AsyncClient(proxy=...)` | Proxies YouTube thumbnail images |
-| `youtube-transcript-api` (subtitles) | `GenericProxyConfig` | Fetches subtitle data from YouTube's API |
-
-All three channels must go through the proxy for full YouTube support. The `YTDLP_PROXY` variable is used consistently across all components. DeepSeek API calls do NOT go through the proxy (they connect directly to `api.deepseek.com`).
+In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reachable from that container.
 
 ---
 
@@ -352,7 +342,7 @@ All three channels must go through the proxy for full YouTube support. The `YTDL
 1. On the "AI解析" page, paste a video URL and click "解析视频".
 2. After the video info loads, scroll down to the download section.
 3. Select your preferred resolution from the grid.
-4. Click "下载视频". The browser will prompt you to save the file.
+4. Click "下载视频" and keep the page open while the server prepares the file. Once the transfer starts, follow its progress in your browser's downloads list.
 
 ### Bilibili Cookies
 
@@ -397,7 +387,7 @@ The cookies are validated to ensure they contain `DedeUserID`, `SESSDATA`, and `
 
 **No download history**. There is no local or server-side record of previously analyzed or downloaded videos.
 
-**Streaming download stability**. The yt-dlp subprocess to StreamingResponse pipeline can fail on unstable connections, particularly with large files.
+**Large-file preparation**. The server needs enough temporary disk space to prepare the entire video before the browser can receive it.
 
 **Fixed analysis prompt**. Users cannot customize the AI analysis focus (e.g., requesting only technical details, or only conclusions).
 
@@ -408,7 +398,7 @@ The cookies are validated to ensure they contain `DedeUserID`, `SESSDATA`, and `
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DEEPSEEK_API_KEY` | Yes | DeepSeek API key |
-| `YTDLP_PROXY` | No | HTTP proxy for YouTube access |
+| `YTDLP_PROXY` | No | HTTP or SOCKS5 proxy for YouTube access |
 | `ALLOWED_ORIGINS` | No | CORS allowed origins (comma-separated). Default: `*` (all origins in dev). Set to your domain(s) in production |
 | `YTDLP_NO_CHECK_CERTIFICATES` | No | Skip SSL cert verification for yt-dlp. Default: `false`. Only set to `true` in regions with SSL interference |
 
