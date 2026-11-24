@@ -1,7 +1,7 @@
 """
 Pydantic 数据模型 — 定义前后端交互的数据格式
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from typing import Literal, Optional
 
 
@@ -10,7 +10,9 @@ from typing import Literal, Optional
 class ParseRequest(BaseModel):
     """解析链接请求"""
     url: str
-    cookies: Optional[str] = None  # B站 cookies 文本（Netscape 格式），可选
+    cookies: Optional[str] = None  # 旧客户端的 Netscape Cookie 文本
+    bilibili_session: Optional[SecretStr] = None  # B站 SESSDATA
+    panopto_session: Optional[SecretStr] = None  # 仅用于本次理大 Panopto 请求
 
 
 # ========== 响应模型 ==========
@@ -26,7 +28,7 @@ class FormatInfo(BaseModel):
 
 class ParseResponse(BaseModel):
     """解析链接的返回结果"""
-    platform: str           # "youtube" | "bilibili" | "unsupported"
+    platform: str           # "youtube" | "bilibili" | "panopto" | "unsupported"
     title: str
     duration: int           # 视频时长（秒）
     thumbnail: str          # 封面图 URL
@@ -34,6 +36,7 @@ class ParseResponse(BaseModel):
     webpage_url: str        # 原始视频页面链接
     formats: list[FormatInfo] = []  # 可选清晰度列表
     youtube_connection: Optional[Literal["direct", "proxy"]] = None
+    has_captions: Optional[bool] = None
 
 
 # ========== AI 分析结果模型 ==========
@@ -109,11 +112,9 @@ class ErrorResponse(BaseModel):
 
 # ========== 下载请求 ==========
 
-class DownloadRequest(BaseModel):
+class DownloadRequest(ParseRequest):
     """下载视频请求"""
-    url: str
     format_id: str = "best"     # 页面选择的分辨率，如 "720p"
-    cookies: Optional[str] = None
     has_audio: bool = True      # 保留旧客户端请求参数，音轨由下载服务选择。
 
 

@@ -2,14 +2,15 @@
 分析相关 API 路由
 """
 import json
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from urllib.parse import unquote, urlsplit
 import httpx
 from models.schemas import ParseRequest, ParseResponse
-from services.ytdlp_service import parse_video_info
-from services.subtitle_service import extract_subtitle_text
 from services.deepseek_service import analyze_subtitles
+from services.panopto_service import PanoptoError
+from services.video_service import open_video
+from services.video_session import BilibiliSessionError
 from services.youtube_network import YouTubeNetworkUnavailable, get_youtube_connection
 from limiter import limiter
 
@@ -24,7 +25,7 @@ async def health_check():
 
 @router.post("/parse", response_model=ParseResponse)
 @limiter.limit("20/minute")
-async def parse_video(req: ParseRequest, request: Request):
+async def parse_video(req: ParseRequest, request: Request, response: Response):
     """
     解析视频链接，返回元数据（标题、封面、时长等）。
 
@@ -33,7 +34,7 @@ async def parse_video(req: ParseRequest, request: Request):
         Body: { "url": "https://www.youtube.com/watch?v=xxx" }
 
     返回内容包含：
-        - platform: 哪个平台 (youtube / bilibili)
+        - platform: 哪个平台 (youtube / bilibili / panopto)
         - title: 视频标题
         - duration: 时长（秒）
         - thumbnail: 封面图地址
@@ -41,9 +42,16 @@ async def parse_video(req: ParseRequest, request: Request):
         - formats: 可选清晰度列表
     """
     try:
-        result = await parse_video_info(req.url, cookies=req.cookies)
-        return result
-    except YouTubeNetworkUnavailable:
+        video = await open_video(
+            req.url,
+            cookies=req.cookies,
+            panopto_session=req.panopto_session,
+            bilibili_session=req.bilibili_session,
+        )
+        if video.info.platform == "panopto" or video.cookies:
+            response.headers["Cache-Control"] = "no-store"
+        return video.info
+    except (YouTubeNetworkUnavailable, PanoptoError, BilibiliSessionError):
         raise
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -105,16 +113,23 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
     """
 
     async def event_generator():
+        step = "parse"
         try:
             # 步骤 1：获取视频信息（快速）
             yield _sse("parse", "processing", "正在获取视频信息...")
 
             try:
-                video_info = await parse_video_info(req.url, cookies=req.cookies)
+                video = await open_video(
+                    req.url,
+                    cookies=req.cookies,
+                    panopto_session=req.panopto_session,
+                    bilibili_session=req.bilibili_session,
+                )
             except RuntimeError as e:
                 yield _sse("parse", "failed", str(e))
                 return
 
+            video_info = video.info
             if video_info.platform == "unsupported":
                 yield _sse("parse", "failed", video_info.description or "暂不支持此平台")
                 return
@@ -122,14 +137,18 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
             yield _sse("parse", "done", f"视频：{video_info.title}")
 
             # 步骤 2：提取字幕
+            step = "subtitles"
             yield _sse("subtitles", "processing", "正在提取字幕文本...")
 
-            subtitle_data = await extract_subtitle_text(req.url, cookies=req.cookies)
+            subtitle_data = await video.subtitles()
 
             if not subtitle_data:
-                yield _sse("subtitles", "failed",
-                           "该视频没有可用字幕（可能未开启自动字幕或语言不支持）\n"
-                           "可以尝试提供中文字幕的视频链接")
+                message = (
+                    "该 Panopto 录像没有可用字幕。可以在官方播放器的字幕面板确认。"
+                    if video_info.platform == "panopto"
+                    else "该视频没有可用字幕（可能未开启自动字幕或语言不支持）\n可以尝试提供中文字幕的视频链接"
+                )
+                yield _sse("subtitles", "failed", message)
                 return
 
             char_count = len(subtitle_data.plain_text)
@@ -156,8 +175,8 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
                 "subtitle_text": subtitle_data.plain_text,
             })
 
-        except YouTubeNetworkUnavailable as error:
-            yield _sse("error", "failed", str(error), code=error.code)
+        except (YouTubeNetworkUnavailable, PanoptoError, BilibiliSessionError) as error:
+            yield _sse(step, "failed", str(error), code=error.code)
         except Exception as e:
             yield _sse("error", "failed", f"分析过程出错: {str(e)}")
 
@@ -165,7 +184,7 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
         }
     )

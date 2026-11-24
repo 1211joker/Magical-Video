@@ -32,10 +32,13 @@
       <p v-if="info.description" class="video-desc">
         {{ info.description }}
       </p>
+      <a v-if="info.platform === 'panopto'" :href="info.webpage_url" target="_blank" rel="noopener noreferrer">
+        在 Panopto 播放 <span aria-hidden="true">↗</span>
+      </a>
     </div>
 
     <!-- 底部操作栏 -->
-    <div class="video-footer" v-if="info.formats && info.formats.length">
+    <div class="video-footer" v-if="info.platform !== 'panopto' && info.formats?.length">
       <span class="format-count">
         {{ info.formats.length }} 种清晰度可选
       </span>
@@ -58,13 +61,15 @@ const thumbFailed = ref(false)
 // 封面图通过后端代理加载（解决 B站 防盗链问题）
 const thumbnailSrc = computed(() => {
   if (!props.info?.thumbnail) return ''
+  if (props.info.platform === 'panopto') return props.info.thumbnail
   return `/api/thumbnail?url=${encodeURIComponent(props.info.thumbnail)}`
 })
 
 const platformName = computed(() => {
   const map = {
     youtube: 'YouTube',
-    bilibili: 'B站'
+    bilibili: 'B站',
+    panopto: '理大 Panopto'
   }
   return map[props.info.platform] || props.info.platform
 })
@@ -137,6 +142,10 @@ function onThumbError() {
   color: #0099cc;
   border: 1px solid rgba(0, 161, 214, 0.25);
 }
+.badge-panopto {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
 
 /* 时长标签 */
 .duration-badge {
@@ -175,6 +184,11 @@ function onThumbError() {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.video-body a {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 0.9rem;
 }
 
 /* 底部操作栏 */

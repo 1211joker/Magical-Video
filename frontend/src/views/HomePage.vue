@@ -9,7 +9,7 @@
         AI 驱动的智能视频分析下载工具
       </p>
       <p class="hero-desc">
-        输入 YouTube 或 Bilibili 视频链接，自动分析字幕内容并生成结构化摘要
+        输入 YouTube、Bilibili 或理大 Panopto 视频链接，自动分析字幕内容并生成结构化摘要
       </p>
 
       <!-- CTA 按钮 -->
@@ -32,7 +32,7 @@
           <polygon points="23 7 16 12 23 17 23 7"/>
           <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
         </svg>
-        <span>YouTube &amp; B站</span>
+        <span>YouTube、B站和理大 Panopto</span>
       </div>
       <div class="feature-item">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

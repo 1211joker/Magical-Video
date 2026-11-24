@@ -50,8 +50,9 @@ import { prepareDownload } from '../api/index.js'
 const props = defineProps({
   formats: { type: Array, required: true },
   url: { type: String, required: true },
-  cookies: { type: String, default: null }
+  credentials: { type: Object, default: undefined }
 })
+const emit = defineEmits(['error'])
 
 // 默认选中第一个（最高画质，因为 formats 已按分辨率降序排列）
 const selectedFormat = ref(props.formats[0]?.format_id || 'best')
@@ -89,17 +90,19 @@ async function handleDownload() {
   if (downloading.value) return
 
   status.value = 'preparing'
-  statusMessage.value = '服务端正在准备文件，请保持页面打开。'
+  statusMessage.value = '正在准备文件，请保持页面打开。'
   downloadController = new AbortController()
   const signal = downloadController.signal
+  const credentials = props.credentials
 
   try {
-    const url = await prepareDownload(props.url, selectedFormat.value, props.cookies, signal)
+    const url = await prepareDownload(props.url, selectedFormat.value, credentials, signal)
     signal.throwIfAborted()
 
     const link = document.createElement('a')
     link.href = url
     link.download = ''
+    link.referrerPolicy = 'no-referrer'
     document.body.append(link)
     link.click()
     link.remove()
@@ -113,6 +116,7 @@ async function handleDownload() {
     } else {
       status.value = 'error'
       statusMessage.value = err.message || '下载失败，请重试'
+      emit('error', err, props.url, credentials)
     }
   } finally {
     downloadController = null

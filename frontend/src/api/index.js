@@ -5,18 +5,22 @@ async function readApiError(response, fallback) {
   return Object.assign(new Error(detail.detail || detail.error || fallback), { code: detail.code })
 }
 
+function videoRequest(url, { cookies, bilibiliSession, panoptoSession } = {}) {
+  const body = { url }
+  if (cookies) body.cookies = cookies
+  if (bilibiliSession) body.bilibili_session = bilibiliSession
+  if (panoptoSession) body.panopto_session = panoptoSession
+  return body
+}
+
 /**
  * 解析视频链接 — 获取元数据（标题、封面、时长等）
  */
-export async function parseVideo(url, cookies = null) {
-  const body = { url }
-  if (cookies) {
-    body.cookies = cookies
-  }
+export async function parseVideo(url, credentials) {
   const res = await fetch(`${API_BASE}/parse`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(videoRequest(url, credentials))
   })
   if (!res.ok) {
     throw await readApiError(res, '解析失败')
@@ -32,20 +36,20 @@ export async function parseVideo(url, cookies = null) {
  *
  * 参数：
  *   url       - 视频链接
- *   cookies   - B站 cookies（可选）
+ *   credentials - 视频平台会话（可选）
  *   onEvent   - 收到事件时的回调，参数 { step, status, message, result? }
  *   onError   - 发生错误时的回调
  *
  * 返回：
  *   { abort: () => void } — 用于取消分析
  */
-export function startAnalysis(url, cookies, onEvent, onError) {
+export function startAnalysis(url, credentials, onEvent, onError) {
   const controller = new AbortController()
 
   fetch(`${API_BASE}/analyze-stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, cookies }),
+    body: JSON.stringify(videoRequest(url, credentials)),
     signal: controller.signal
   }).then(async (response) => {
     if (!response.ok) {
@@ -131,14 +135,14 @@ export async function askQuestion(question, subtitleText, analysisSummary, chatH
 /**
  * 提交下载任务并等待文件准备完毕，返回供浏览器直接访问的下载地址。
  */
-export async function prepareDownload(url, formatId, cookies, signal) {
+export async function prepareDownload(url, formatId, credentials, signal) {
   signal?.throwIfAborted()
   const jobsUrl = `${API_BASE}/download/jobs`
   // 先取得任务编号，页面即使在提交期间离开也能取消已创建的任务。
   const response = await fetch(jobsUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, format_id: formatId, cookies }),
+    body: JSON.stringify({ ...videoRequest(url, credentials), format_id: formatId }),
   })
   const { job_id: jobId } = await readDownloadResponse(response)
   const jobUrl = `${jobsUrl}/${jobId}`

@@ -6,13 +6,22 @@ from contextlib import contextmanager
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from limiter import limiter
 from models.schemas import DownloadJobStarted, DownloadJobStatus, DownloadRequest
-from services.download_service import DownloadJobNotFound, DownloadJobs, DownloadNotReady
+from services.download_service import (
+    DownloadJobNotFound,
+    DownloadJobs,
+    DownloadNotReady,
+    DownloadRedirect,
+    PreparedDownload,
+    prepare_download,
+)
+from services.panopto_service import PanoptoError
+from services.video_session import BilibiliSessionError
 from services.youtube_network import YouTubeNetworkUnavailable
-from services.ytdlp_service import PreparedVideo, download_video
+from services.ytdlp_service import PreparedVideo
 
 router = APIRouter(prefix="/api", tags=["download"])
 download_limit = limiter.shared_limit("3/minute", scope="video-download")
@@ -31,7 +40,7 @@ def download_errors():
         raise HTTPException(404, "下载任务不存在或已过期，请重新发起下载") from error
     except DownloadNotReady as error:
         raise HTTPException(409, "视频文件还在准备中") from error
-    except YouTubeNetworkUnavailable:
+    except (YouTubeNetworkUnavailable, PanoptoError, BilibiliSessionError):
         raise
     except RuntimeError as error:
         logger.warning("[下载] 视频准备失败")
@@ -59,19 +68,42 @@ class DownloadFileResponse(FileResponse):
             await asyncio.shield(self.video.remove())
 
 
+def download_response(download: PreparedDownload) -> Response:
+    if isinstance(download, DownloadRedirect):
+        return RedirectResponse(
+            download.url,
+            status_code=303,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+    return DownloadFileResponse(download)
+
+
 @router.post("/download")
 @download_limit
 async def download_video_endpoint(body: DownloadRequest, request: Request):
     """保留直接接收文件的 API。"""
     with download_errors():
-        video = await download_video(body.url, body.format_id, body.cookies)
-    return DownloadFileResponse(video)
+        download = await prepare_download(
+            body.url,
+            body.format_id,
+            body.cookies,
+            panopto_session=body.panopto_session,
+            bilibili_session=body.bilibili_session,
+        )
+    return download_response(download)
 
 
 @router.post("/download/jobs", status_code=202, response_model=DownloadJobStarted)
 @download_limit
 async def start_download_job(body: DownloadRequest, request: Request, jobs: DownloadJobs = Depends(get_download_jobs)):
-    return DownloadJobStarted(job_id=jobs.start(body.url, body.format_id, body.cookies))
+    job_id = jobs.start(
+        body.url,
+        body.format_id,
+        body.cookies,
+        panopto_session=body.panopto_session,
+        bilibili_session=body.bilibili_session,
+    )
+    return DownloadJobStarted(job_id=job_id)
 
 
 @router.get("/download/jobs/{job_id}", response_model=DownloadJobStatus, response_model_exclude_none=True)
@@ -92,5 +124,5 @@ async def cancel_download_job(job_id: str, jobs: DownloadJobs = Depends(get_down
 @router.get("/download/jobs/{job_id}/file")
 async def get_download_file(job_id: str, jobs: DownloadJobs = Depends(get_download_jobs)):
     with download_errors():
-        video = jobs.claim(job_id)
-    return DownloadFileResponse(video)
+        download = jobs.claim(job_id)
+    return download_response(download)

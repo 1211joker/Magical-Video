@@ -14,38 +14,18 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit
 from config import YTDLP_PROXY, YTDLP_TIMEOUT, DOWNLOAD_TIMEOUT, YTDLP_NO_CHECK_CERTIFICATES
 from models.schemas import ParseResponse, FormatInfo
+from services.video_platform import identify_platform
+from services.video_session import BilibiliSessionError, check_bilibili_login
 from services.youtube_network import YouTubeConnection, get_youtube_connection
 
-
-PLATFORM_DOMAINS = {
-    "youtube": ("youtube.com", "youtu.be"),
-    "bilibili": ("bilibili.com", "b23.tv"),
-}
 
 # 已知不支持的平台
 UNSUPPORTED_PLATFORMS = [
     (r"tiktok\.com", "TikTok"),
     (r"douyin\.com", "抖音"),
 ]
-
-
-def identify_platform(url: str) -> str:
-    """
-    通过 URL 判断是哪个平台。
-    返回 "youtube" / "bilibili" / "unsupported"
-    """
-    url = url.strip()
-    try:
-        hostname = urlsplit(url if "://" in url or url.startswith("//") else f"//{url}").hostname or ""
-    except ValueError:
-        return "unsupported"
-    for platform, domains in PLATFORM_DOMAINS.items():
-        if any(hostname == domain or hostname.endswith("." + domain) for domain in domains):
-            return platform
-    return "unsupported"
 
 
 def check_unsupported(url: str) -> Optional[str]:
@@ -73,8 +53,7 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
     这一步不下载视频，只获取"名片信息"，通常 2-5 秒完成。
 
-    cookies 参数：B站需要登录才能获取完整信息。用户把浏览器的 cookies
-    粘贴进来，我们临时写成文件传给 yt-dlp，用完即删，不留存。
+    cookies 是供 yt-dlp 使用的 Netscape 文本。临时文件会在请求结束后删除。
     """
     platform = identify_platform(url)
     if platform == "unsupported":
@@ -84,7 +63,7 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
             title="",
             duration=0,
             thumbnail="",
-            description=f"暂不支持{unsupported_name}" if unsupported_name else "暂不支持此平台，目前只支持 YouTube 和 B站",
+            description=f"暂不支持{unsupported_name}" if unsupported_name else "目前支持 YouTube、B站和理大 Panopto 的视频链接",
             webpage_url=url,
             formats=[]
         )
@@ -136,23 +115,12 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
         if process.returncode != 0:
             error_msg = stderr.decode("utf-8", errors="replace")
-            # 识别 B站 需要登录的情况
-            if platform == "bilibili" and ("412" in error_msg or "403" in error_msg):
-                if not cookies:
-                    raise RuntimeError(
-                        "B站需要登录才能获取视频信息。\n"
-                        "请在下方展开「B站 Cookies」面板，按指引粘贴 cookies 后重试。\n"
-                        "YouTube 视频无需此步骤。"
-                    )
-                else:
-                    raise RuntimeError("cookies 已过期或无效，请重新获取并粘贴")
+            if platform == "bilibili":
+                check_bilibili_login(error_msg, bool(cookies_file))
             if "Private video" in error_msg or "Video unavailable" in error_msg:
                 raise RuntimeError("视频不可用（可能已删除或设为私密）")
             if "HTTP Error 429" in error_msg:
                 raise RuntimeError("请求过于频繁，请稍等片刻再试")
-            # 如果带了 cookies 还失败，可能是 cookies 过期
-            if cookies_file and platform == "bilibili":
-                raise RuntimeError("cookies 可能已过期，请重新获取并粘贴")
             raise RuntimeError("解析失败，请检查链接是否有效")
 
         data = json.loads(stdout.decode("utf-8"))
@@ -339,6 +307,8 @@ async def download_video(
         )
 
         if process.returncode != 0:
+            if platform == "bilibili":
+                check_bilibili_login(stderr.decode("utf-8", errors="replace"), bool(cookies_file))
             error_text = _extract_download_error(stderr)
             raise RuntimeError(f"下载失败：{error_text}")
 
@@ -352,7 +322,7 @@ async def download_video(
         completed = True
         return PreparedVideo(filepath)
 
-    except RuntimeError:
+    except (RuntimeError, BilibiliSessionError):
         raise
     except asyncio.TimeoutError as error:
         raise RuntimeError(f"下载超时（超过 {DOWNLOAD_TIMEOUT} 秒），文件可能过大或网络较慢") from error

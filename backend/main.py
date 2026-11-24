@@ -22,6 +22,8 @@ from config import ALLOWED_ORIGINS
 from limiter import limiter
 from routers import analyze, download, qa
 from services.download_service import DownloadJobs
+from services.panopto_service import PanoptoError
+from services.video_session import BilibiliSessionError
 from services.youtube_network import YouTubeNetworkUnavailable
 
 
@@ -62,6 +64,31 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.exception_handler(YouTubeNetworkUnavailable)
 async def handle_youtube_network_unavailable(_request: Request, error: YouTubeNetworkUnavailable):
     return JSONResponse(status_code=503, content={"detail": str(error), "code": error.code})
+
+
+@app.exception_handler(PanoptoError)
+async def handle_panopto_error(_request: Request, error: PanoptoError):
+    status = {
+        "panopto_login_required": 401,
+        "panopto_session_rejected": 401,
+        "panopto_download_unavailable": 403,
+        "panopto_network_unavailable": 503,
+        "panopto_unavailable": 502,
+    }.get(error.code, 400)
+    return JSONResponse(
+        status_code=status,
+        content={"detail": str(error), "code": error.code},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.exception_handler(BilibiliSessionError)
+async def handle_bilibili_session_error(_request: Request, error: BilibiliSessionError):
+    return JSONResponse(
+        status_code=401,
+        content={"detail": str(error), "code": error.code},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # 注册路由

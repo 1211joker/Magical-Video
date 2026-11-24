@@ -2,7 +2,7 @@
 
 # 🎬 Magical Video
 
-Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube 或 Bilibili 视频链接，程序自动提取字幕，交由 DeepSeek 进行结构化分析，最终输出包含概述、大纲、要点、总结和交互式思维导图的多维度摘要。分析完成后，可以就视频内容与 AI 对话问答，所有回答都基于字幕原文。同时支持视频下载。
+Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、Bilibili 或理大 Panopto 视频链接，程序提取可用字幕，交由 DeepSeek 生成概述、大纲、要点、总结和交互式思维导图。分析完成后，可以根据字幕向 AI 追问。Panopto 录像在平台为当前账号提供官方下载时也可离线保存。
 
 核心价值在于 AI 分析流程：一段 30 分钟的视频，可以在不到一分钟内浏览其结构化拆解结果（概述、大纲、关键要点、结论及知识树思维导图），还可通过 AI 问答针对特定话题深入追问。
 
@@ -21,7 +21,7 @@ Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube �
 主流程接收视频链接，输出四维度分析结果及交互式思维导图：
 
 1. **解析**：yt-dlp 获取视频元数据（标题、时长、封面）。
-2. **提取字幕**：YouTube 通过 `youtube-transcript-api` 获取字幕；Bilibili 通过 yt-dlp 下载字幕文件后解析 VTT 或 JSON 格式。
+2. **提取字幕**。YouTube 使用 `youtube-transcript-api`，Bilibili 使用 yt-dlp 读取 VTT 或 JSON，理大 Panopto 使用播放器提供的带时间戳字幕。
 3. **AI 分析**：字幕文本发送至 DeepSeek（`deepseek-v4-flash` 模型），系统提示词要求输出详实、有原文依据的结构化结果。分析进度通过 SSE 实时推送到前端。
 4. **结果展示**：选项卡式界面呈现概述、大纲、要点、结论四个维度，并包含基于 markmap 的交互式思维导图。
 
@@ -102,7 +102,7 @@ Magical-Video/
     │   ├── components/           # 公共组件
     │   │   ├── NavBar.vue
     │   │   ├── VideoInfo.vue
-    │   │   ├── CookieGuide.vue
+    │   │   ├── VideoSessionGuide.vue
     │   │   ├── AnalysisResult.vue
     │   │   ├── DownloadSection.vue
     │   │   ├── MindMap.vue
@@ -324,8 +324,8 @@ YTDLP_PROXY=http://127.0.0.1:7890
 
 1. 浏览器打开 `http://localhost:5173`。
 2. 点击导航栏中的"AI解析"。
-3. 在输入框中粘贴 YouTube 或 Bilibili 视频链接。
-4. Bilibili 链接需要先展开"B站 Cookies"面板，粘贴浏览器 Cookie 并点击"保存 Cookies"。（YouTube 链接跳过此步骤。）
+3. 在输入框中粘贴 YouTube、Bilibili 或理大 Panopto 视频链接。
+4. B站或理大 Panopto 需要登录时，按「连接会话」面板的指引填写。
 5. 点击"解析视频"，等待视频信息（标题、时长、封面）加载。
 6. 点击"AI 分析"，后端会自动提取字幕并发送给 DeepSeek 进行分析，进度实时显示。
 7. 分析完成后，在四个选项卡中浏览结果：概述、大纲、要点、总结。"思维导图"选项卡提供交互式知识树。
@@ -344,22 +344,24 @@ YTDLP_PROXY=http://127.0.0.1:7890
 3. 在清晰度网格中选择需要的分辨率。
 4. 点击「下载视频」并保持页面打开。文件准备完成后，在浏览器的下载列表查看进度。
 
-### 获取 Bilibili Cookies
+### 连接 B站和理大 Panopto 会话
 
-Bilibili 需要登录 Cookie 才能获取视频信息，获取方法：
+1. 粘贴视频链接，点击链接下方的「连接会话」，或在解析提示登录时打开同一个面板。
+2. 在面板提供的官方页面登录。打开 Chrome 或 Edge 开发者工具（Mac 按 `⌥⌘I`，Windows 按 `Ctrl+Shift+I`），在顶部找到「应用（Application）」。标签隐藏时，点右侧 `»`。
+3. 在左侧「存储（Storage）→ Cookies」中选择站点。B站在 `www.bilibili.com` 下复制 `SESSDATA` 的值，理大 Panopto 在 `polyu.ap.panopto.com` 下复制 `.ASPXAUTH` 的值。
+4. 把值填入本地项目并连接会话。两个平台的会话都只保留在当前解析页，刷新或离开后需要重新连接。
 
-1. 在浏览器中登录 [bilibili.com](https://www.bilibili.com)。
-2. 安装浏览器扩展，如"Get cookies.txt LOCALLY"（Chrome/Edge）或"cookies.txt"（Firefox）。
-3. 打开任意 Bilibili 视频页面，点击扩展图标，导出 Netscape 格式的 Cookie。
-4. 将导出的文本粘贴到应用中的"B站 Cookies"面板。
+### 理大 Panopto 课程录像
 
-Cookie 会经过校验，确保包含 `DedeUserID`、`SESSDATA`、`bili_jct` 三个必填字段。Cookie 写入临时文件传递给 yt-dlp，请求完成后立即删除。
+1. 在「AI 解析」中粘贴 `https://polyu.ap.panopto.com/Panopto/Pages/Viewer.aspx?id=…` 并解析。公开视频可直接获取信息。
+2. 如页面提示连接会话，在官方课程页登录并确认可以播放，再按上面的共用流程连接。
+3. 有字幕时，点击「AI 分析视频内容」，字幕会发送给项目配置的 DeepSeek，结果可用于后续问答。Panopto 为当前账号提供官方下载时，浏览器直接接管 MP4 下载。
 
 ---
 
 ## 🔧 技术挑战与解决方案
 
-**Bilibili 412/403 反爬拦截**。Bilibili 对无有效登录凭证的请求返回 412 或 403。通过实现 Netscape 格式 Cookie 解析解决：用户粘贴浏览器 Cookie，后端校验必填字段（`DedeUserID`、`SESSDATA`、`bili_jct`），写入临时文件传给 yt-dlp，用完即删。
+**Bilibili 会话**。用户从浏览器内置开发者工具复制 `SESSDATA`。后端校验该值，生成仅适用于 B站域名的 Netscape 临时文件，供 yt-dlp 解析、取字幕和下载，请求结束后删除。
 
 **YouTube SABR 流式拦截**。YouTube 的服务端与浏览器协同渲染机制拦截默认 Web 客户端的流媒体请求。通过切换到 Android 客户端（`youtube:player_client=android`）绕过。代价是无 PO Token 时仅能获取 360p 格式。
 
@@ -369,7 +371,7 @@ Cookie 会经过校验，确保包含 `DedeUserID`、`SESSDATA`、`bili_jct` 三
 
 **长视频 AI 超时**。超过 30 分钟的视频字幕可能超过 8000 字符，导致 30 秒超时。将字符上限提升到 25000，max tokens 提升到 10000，截断策略改为首 20% 加中 60% 加尾 20%，保证覆盖视频全程。
 
-**Cookie 校验不准确**。早期校验仅检查行数，不完整 Cookie 也能通过。增加必填字段检测（`DedeUserID`、`SESSDATA`、`bili_jct`），缺失时给出明确错误提示。
+**会话重试**。解析、字幕或下载收到明确的登录错误时，页面提示用户更新对应平台的会话。
 
 **Emoji 跨平台渲染不一致**。Windows、macOS、Linux 对 Emoji 渲染差异大。全部替换为 Feather 风格 SVG 内联图标，使用 `currentColor` 跟随文字颜色，消除跨平台差异。
 

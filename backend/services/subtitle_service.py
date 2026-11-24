@@ -18,9 +18,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from pydantic import SecretStr
+
 from config import YTDLP_PROXY, YTDLP_TIMEOUT
+from services.panopto_service import PanoptoVideo, get_panopto_captions
+from services.video_platform import identify_platform
+from services.video_session import BilibiliSessionError, check_bilibili_login
 from services.youtube_network import get_youtube_connection
-from services.ytdlp_service import identify_platform
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +223,6 @@ def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_d
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT + 30)
 
     logger.info(f"[B站字幕] yt-dlp returncode={result.returncode}")
-    if result.stderr:
-        stderr_tail = result.stderr.strip().split('\n')[-10:]
-        logger.info(f"[B站字幕] stderr (tail):\n{chr(10).join(stderr_tail)}")
-
     all_files = os.listdir(output_dir)
     logger.info(f"[B站字幕] 输出目录文件 ({len(all_files)} 个): {all_files}")
 
@@ -233,6 +233,7 @@ def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_d
             sub_files.append(os.path.join(output_dir, fname))
 
     if not sub_files:
+        check_bilibili_login(result.stderr, bool(cookies_file), checking_subtitles=True)
         logger.warning(f"[B站字幕] 未找到任何字幕文件")
         return None
 
@@ -357,8 +358,10 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
         logger.info(f"[B站字幕] 成功提取 {len(segments)} 片段，{len(plain)} 字")
         return SubtitleData(plain_text=plain, segments=segments)
 
+    except BilibiliSessionError:
+        raise
     except Exception as e:
-        logger.warning(f"[B站字幕] 提取过程异常: {type(e).__name__}: {e}")
+        logger.warning("[B站字幕] 提取过程异常: %s", type(e).__name__)
         return None
 
     finally:
@@ -370,6 +373,16 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
 
 
 # ========== 公共入口 ==========
+
+async def extract_panopto_subtitle_text(
+    video: PanoptoVideo,
+    session: Optional[SecretStr],
+) -> Optional[SubtitleData]:
+    segments = await get_panopto_captions(video, session)
+    if not segments:
+        return None
+    return SubtitleData(plain_text=_segments_to_plain_text(segments), segments=segments)
+
 
 async def extract_subtitle_text(
     url: str,

@@ -12,9 +12,6 @@
       @retry="retryYouTubeNetwork"
     />
 
-    <!-- B站 Cookies 设置（可折叠） -->
-    <CookieGuide ref="cookieGuideRef" @update:cookies="onCookiesUpdate" />
-
     <!-- 链接输入区 -->
     <div class="input-section card">
       <label for="url-input" class="input-label">视频链接</label>
@@ -23,14 +20,14 @@
           id="url-input"
           v-model="urlInput"
           type="text"
-          placeholder="粘贴 YouTube 或 B站 视频链接..."
+          placeholder="粘贴 YouTube、B站或理大 Panopto 录像链接"
           class="url-input"
-          @keyup.enter="handleParse"
+          @keyup.enter="handleParse()"
         />
         <button
           class="btn-primary parse-btn"
           :disabled="!urlInput.trim() || parsing"
-          @click="handleParse"
+          @click="handleParse()"
         >
           <svg v-if="parsing" class="spinner-svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
             <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/>
@@ -39,7 +36,26 @@
           {{ parsing ? '解析中...' : '解析视频' }}
         </button>
       </div>
+      <div v-if="inputSite && !sessionGuide" class="input-session">
+        <template v-if="sessions[inputSite.platform]">
+          <span>{{ inputSite.label }} 会话已填写</span>
+          <button class="session-action" type="button" @click="sessions[inputSite.platform] = null">清除会话</button>
+        </template>
+        <button v-else class="session-action" type="button" :disabled="parsing" @click="openInputSession">
+          连接 {{ inputSite.label }} 会话
+        </button>
+      </div>
     </div>
+
+    <VideoSessionGuide
+      v-if="sessionGuide"
+      :key="sessionGuide.url"
+      :site="sessionGuide.site"
+      :message="sessionGuide.message"
+      :retry="Boolean(sessionGuide.retry)"
+      @connect="connectSession"
+      @dismiss="sessionGuide = null"
+    />
 
     <!-- 视频加载骨架屏 -->
     <div v-if="parsing" class="skeleton-card card">
@@ -51,7 +67,7 @@
 
     <!-- 解析错误 -->
     <Transition name="fade">
-      <div v-if="errorMsg" class="error-banner" role="alert">
+      <div v-if="errorMsg && !sessionGuide" class="error-banner" role="alert">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
@@ -69,15 +85,22 @@
           {{ videoInfo.youtube_connection === 'proxy' ? 'YouTube 已通过代理连通' : 'YouTube 网络已连通' }}
         </p>
         <VideoInfo :info="videoInfo" />
+        <p v-if="videoInfo.has_captions === false" class="platform-note">
+          该录像没有可用字幕，暂时无法生成摘要和问答。
+        </p>
 
         <!-- AI 分析按钮 -->
-        <div class="analyze-area" v-if="!analysisResult && !analyzing && progressSteps.length === 0">
+        <div
+          v-if="videoInfo.has_captions !== false && !analysisResult && !analyzing && progressSteps.length === 0"
+          class="analyze-area"
+        >
           <button class="btn-analyze" @click="handleAnalyze">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
             </svg>
             AI 分析视频内容
           </button>
+          <p v-if="videoInfo.platform === 'panopto'" class="platform-note">开始分析后，课程字幕会发送给 DeepSeek。</p>
         </div>
 
         <!-- 分析错误 -->
@@ -148,9 +171,13 @@
             :key="parsedVideoUrl"
             :formats="videoInfo.formats"
             :url="parsedVideoUrl"
-            :cookies="cookies"
+            :credentials="credentialsFor(parsedVideoUrl)"
+            @error="handleDownloadError"
           />
         </Transition>
+        <p v-if="videoInfo.platform === 'panopto' && !videoInfo.formats?.length" class="platform-note">
+          Panopto 当前未为此录像提供官方下载。
+        </p>
       </div>
     </Transition>
   </div>
@@ -159,11 +186,12 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { parseVideo, startAnalysis } from '../api/index.js'
+import { sessionSiteFor } from '../videoSessions.js'
 import VideoInfo from '../components/VideoInfo.vue'
-import CookieGuide from '../components/CookieGuide.vue'
 import AnalysisResult from '../components/AnalysisResult.vue'
 import DownloadSection from '../components/DownloadSection.vue'
 import YouTubeNetworkDialog from '../components/YouTubeNetworkDialog.vue'
+import VideoSessionGuide from '../components/VideoSessionGuide.vue'
 
 const urlInput = ref('')
 const parsing = ref(false)
@@ -171,8 +199,9 @@ const videoInfo = ref(null)
 const parsedVideoUrl = computed(() => videoInfo.value?.source_url || videoInfo.value?.webpage_url)
 const errorMsg = ref('')
 const networkIssue = ref(null)
-const cookies = ref(null)
-const cookieGuideRef = ref(null)
+const sessionGuide = ref(null)
+const sessions = reactive({ bilibili: null, panopto: null })
+const inputSite = computed(() => sessionSiteFor(urlInput.value))
 
 // AI 分析状态
 const analyzing = ref(false)
@@ -193,29 +222,26 @@ onMounted(() => {
       if (state.urlInput) urlInput.value = state.urlInput
       if (state.videoInfo) videoInfo.value = state.videoInfo
       if (state.analysisResult) analysisResult.value = state.analysisResult
-      if (state.cookies) cookies.value = state.cookies
+      if (typeof state.cookies === 'string' && state.cookies) {
+        // 旧 B站会话迁移到当前页，保存解析状态时移除凭证副本。
+        sessions.bilibili = { cookies: state.cookies }
+        saveAnalysisState()
+      }
     }
   } catch (e) { /* 数据损坏，忽略 */ }
 })
 
 // 自动保存状态变化
-watch(
-  [urlInput, videoInfo, analysisResult, () => cookies.value],
-  () => {
-    try {
-      localStorage.setItem(STATE_KEY, JSON.stringify({
-        urlInput: urlInput.value,
-        videoInfo: videoInfo.value,
-        analysisResult: analysisResult.value,
-        cookies: cookies.value,
-      }))
-    } catch (e) { /* localStorage 可能满了 */ }
-  },
-  { deep: true }
-)
+watch([urlInput, videoInfo, analysisResult], saveAnalysisState, { deep: true })
 
-function clearSavedState() {
-  try { localStorage.removeItem(STATE_KEY) } catch (e) { /* ignore */ }
+function saveAnalysisState() {
+  try {
+    localStorage.setItem(STATE_KEY, JSON.stringify({
+      urlInput: urlInput.value,
+      videoInfo: videoInfo.value,
+      analysisResult: analysisResult.value,
+    }))
+  } catch (e) { /* localStorage 可能满了 */ }
 }
 
 const progressLabels = {
@@ -240,14 +266,38 @@ const showRetryButton = computed(() => {
   return !allDone
 })
 
-function onCookiesUpdate(cookiesText) {
-  cookies.value = cookiesText
+function credentialsFor(url) {
+  const site = sessionSiteFor(url)
+  return site ? sessions[site.platform] ?? undefined : undefined
 }
 
-function showYouTubeNetworkIssue(code, message, retry) {
+function openInputSession() {
+  const url = urlInput.value.trim()
+  sessionGuide.value = { site: inputSite.value, url, retry: () => handleParse(url) }
+}
+
+function handleVideoError({ code, message }, url, retry, credentials) {
   if (code === 'youtube_network_unavailable' || code === 'youtube_proxy_unavailable') {
     networkIssue.value = { message, retry }
+    return
   }
+  const site = sessionSiteFor(url)
+  if (!site || (code !== site.platform + '_login_required' && code !== site.platform + '_session_rejected')) return
+  if (credentials !== (sessions[site.platform] ?? undefined)) return
+
+  sessions[site.platform] = null
+  sessionGuide.value = { site, url, message, retry }
+}
+
+function handleDownloadError(error, url, credentials) {
+  handleVideoError(error, url, null, credentials)
+}
+
+function connectSession(value) {
+  const { site, retry } = sessionGuide.value
+  sessions[site.platform] = { [site.requestField]: value }
+  sessionGuide.value = null
+  retry?.()
 }
 
 function retryYouTubeNetwork() {
@@ -256,40 +306,42 @@ function retryYouTubeNetwork() {
   retry()
 }
 
-async function handleParse() {
-  const url = urlInput.value.trim()
+async function handleParse(url = urlInput.value.trim()) {
   if (!url || parsing.value) return
 
+  abortAnalysis?.abort()
+  analyzing.value = false
   parsing.value = true
   errorMsg.value = ''
+  sessionGuide.value = null
   videoInfo.value = null
   analysisResult.value = null
   analysisError.value = ''
   progressSteps.length = 0
 
+  const credentials = credentialsFor(url)
   try {
-    const result = await parseVideo(url, cookies.value)
+    const result = await parseVideo(url, credentials)
     if (result.platform === 'unsupported') {
       errorMsg.value = result.description || '暂不支持此平台'
       videoInfo.value = null
     } else {
-      videoInfo.value = { ...result, source_url: url }
+      videoInfo.value = { ...result, source_url: result.platform === 'panopto' ? result.webpage_url : url }
     }
   } catch (err) {
     errorMsg.value = err.message || '解析失败，请检查链接'
-    showYouTubeNetworkIssue(err.code, errorMsg.value, handleParse)
-    if (errorMsg.value.includes('cookies') || errorMsg.value.includes('B站')) {
-      cookieGuideRef.value?.open()
-    }
+    handleVideoError({ code: err.code, message: errorMsg.value }, url, () => handleParse(url), credentials)
   } finally {
     parsing.value = false
   }
 }
 
 function handleAnalyze() {
-  if (!parsedVideoUrl.value || analyzing.value) return
+  const url = parsedVideoUrl.value
+  if (!url || analyzing.value) return
 
   analyzing.value = true
+  sessionGuide.value = null
   analysisError.value = ''
   analysisResult.value = null
   progressSteps.length = 0
@@ -300,12 +352,13 @@ function handleAnalyze() {
     { step: 'analyze', status: 'waiting' }
   )
 
+  const credentials = credentialsFor(url)
   abortAnalysis = startAnalysis(
-    parsedVideoUrl.value,
-    cookies.value,
+    url,
+    credentials,
     (event) => {
       if (event.status === 'failed') {
-        showYouTubeNetworkIssue(event.code, event.message, handleAnalyze)
+        handleVideoError(event, url, handleAnalyze, credentials)
       }
       const idx = progressSteps.findIndex(s => s.step === event.step)
       if (idx >= 0) {
@@ -320,9 +373,6 @@ function handleAnalyze() {
       if (event.status === 'failed') {
         analyzing.value = false
         analysisError.value = event.message
-        if (event.message.includes('cookies') || event.message.includes('B站')) {
-          cookieGuideRef.value?.open()
-        }
         return
       }
 
@@ -343,7 +393,7 @@ function handleAnalyze() {
     (err) => {
       analyzing.value = false
       analysisError.value = err.message || '分析请求失败'
-      showYouTubeNetworkIssue(err.code, analysisError.value, handleAnalyze)
+      handleVideoError({ code: err.code, message: analysisError.value }, url, handleAnalyze, credentials)
       const active = progressSteps.find(s => s.status === 'processing')
       if (active) {
         active.status = 'failed'
@@ -374,6 +424,25 @@ onBeforeUnmount(() => {
   margin-bottom: 10px;
   color: var(--text-secondary);
   font-size: 0.88rem;
+}
+
+.platform-note {
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+}
+
+.input-session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+}
+
+.session-action {
+  color: var(--accent);
 }
 
 .page-header {

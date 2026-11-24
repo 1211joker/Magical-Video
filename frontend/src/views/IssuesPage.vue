@@ -44,7 +44,7 @@
       <div class="issue-list">
         <div v-for="item in pendingIssues" :key="item.id" class="issue-card card">
           <div class="issue-header">
-            <span class="issue-badge pending">待解决</span>
+            <span class="issue-badge pending">{{ item.badge || '待解决' }}</span>
             <h3 class="issue-title">{{ item.title }}</h3>
           </div>
           <p class="issue-desc">{{ item.description }}</p>
@@ -57,6 +57,18 @@
 
 <script setup>
 const solvedIssues = [
+  {
+    id: 18,
+    title: '接入理大 Panopto 课程录像',
+    description: 'Panopto 的公开录像可以直接解析。校内录像需要使用能够访问课程的登录会话。',
+    solution: '解析页支持读取录像信息和带时间戳的字幕，复用现有的摘要、思维导图与连续问答。已用理大图书馆的公开视频验证字幕提取、AI 分析和追问。',
+  },
+  {
+    id: 4,
+    title: 'B站和 Panopto 共用会话入口',
+    description: '旧版 B站流程需要用浏览器扩展导出整份 Cookie 文件，Panopto 则有单独的登录面板。',
+    solution: '两站共用一个面板。通过浏览器自带的开发者工具，B站填写 SESSDATA 的值，Panopto 填写 .ASPXAUTH 的值。会话只保留在当前解析页。',
+  },
   {
     id: 17,
     title: '大文件由浏览器直接下载',
@@ -78,8 +90,8 @@ const solvedIssues = [
   {
     id: 1,
     title: 'B站 412/403 拦截',
-    description: 'B站对无 cookies 请求返回 412 或 403，导致无法获取视频信息和字幕。使用浏览器导出的 Netscape 格式 cookies 进行认证。',
-    solution: '实现 cookies 粘贴功能，解析 Netscape 格式，注入 yt-dlp 和 API 请求中；自动检测关键登录字段（DedeUserID、SESSDATA、bili_jct）是否完整。',
+    description: 'B站有时会拒绝匿名解析、字幕或下载请求，需要用当前浏览器的登录会话重试。',
+    solution: '后端识别登录错误，解析页提示连接或更新 B站会话。yt-dlp 使用的临时 Cookie 文件会在请求结束后清理。',
   },
   {
     id: 2,
@@ -92,12 +104,6 @@ const solvedIssues = [
     title: 'B站字幕提取失败',
     description: '早期流程依赖视频元数据中的字幕地址，部分视频缺少该字段，分析无法继续。',
     solution: '使用 yt-dlp 将可用字幕下载到临时目录，再解析 VTT、JSON 等格式。字幕服务提供给 AI 的纯文本，也返回供页面显示的带时间戳片段。',
-  },
-  {
-    id: 4,
-    title: 'B站 cookies 校验不准确',
-    description: '早期 cookies 校验仅检查行数 ≥ 3，但用户粘贴不完整 cookies 时仍会通过校验，导致解析失败但无明确错误提示。',
-    solution: '增加关键字段检测：必须包含 DedeUserID、SESSDATA、bili_jct 三个关键登录 cookie；缺少时给出明确提示。',
   },
   {
     id: 5,
@@ -138,8 +144,8 @@ const solvedIssues = [
   {
     id: 11,
     title: '页面切换导致分析状态丢失',
-    description: '从 AI解析 页面切换到其他页面（如 AI问答）后再返回，之前解析的视频信息、AI 分析结果、B站 Cookies 全部丢失，需要重新输入和解析。',
-    solution: '使用 localStorage + Vue watch 实现状态持久化：onMounted 自动恢复 urlInput / videoInfo / analysisResult / cookies；watch 监听变化自动保存。数据在页面刷新后仍存在，重新解析时自动覆盖旧数据。',
+    description: '从 AI解析 页面切换到其他页面后再返回，旧版会丢失已经解析的视频信息和 AI 分析结果。',
+    solution: '浏览器自动保存视频链接、视频信息和分析结果。B站与 Panopto 的登录会话只保留在当前解析页。',
   },
   {
     id: 12,
@@ -163,6 +169,13 @@ const solvedIssues = [
 
 const pendingIssues = [
   {
+    id: 108,
+    badge: '平台限制',
+    title: 'Panopto 的字幕与下载取决于课程权限',
+    description: 'AI 分析需要录像提供可用字幕。Panopto 向当前账号提供官方 MP4 时，解析页才显示下载入口。',
+    impact: '官方下载由浏览器接管。只有播放入口时，可在官方页面观看录像。',
+  },
+  {
     id: 101,
     title: 'YouTube 高清下载选项可能缺失',
     description: '当前使用 yt-dlp 的 Android 客户端配置，部分视频返回的下载格式较少。',
@@ -176,7 +189,7 @@ const pendingIssues = [
   {
     id: 104,
     title: '大文件需要服务器临时磁盘空间',
-    description: '服务端先准备完整视频，再由浏览器接收。准备期间页面会显示等待状态。',
+    description: '下载 YouTube 和 B站视频时，服务端先准备完整文件，再由浏览器接收。准备期间页面会显示等待状态。',
     impact: '大文件需要更多临时磁盘空间，浏览器开始接收前也可能等得更久。',
   },
   {

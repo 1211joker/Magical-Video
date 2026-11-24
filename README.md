@@ -2,7 +2,7 @@
 
 # 🎬 Magical Video
 
-Magical Video is a web application that uses AI to analyze video content. Given a YouTube or Bilibili URL, it extracts the video's subtitles, sends them to DeepSeek for structured analysis, and presents the results as a multi-dimensional summary with an interactive mind map. After analysis, you can chat with AI about the video — ask questions and get answers backed by the actual subtitles. It also supports downloading videos in available resolutions.
+Magical Video analyzes videos from YouTube, Bilibili and PolyU Panopto. It sends available captions to DeepSeek to generate a summary and interactive mind map, then uses the captions to answer follow-up questions. Panopto recordings can be downloaded when the platform offers the viewer an official download.
 
 The core value is the AI analysis pipeline: instead of watching a 30-minute video, you can skim a structured breakdown (overview, outline, key points, conclusions, and a knowledge-tree mind map) in under a minute, then dive deeper into specific topics through AI-powered Q&A.
 
@@ -21,7 +21,7 @@ The core value is the AI analysis pipeline: instead of watching a 30-minute vide
 The primary workflow takes a video URL and produces a structured analysis in four dimensions, plus an interactive mind map:
 
 1. **Parse**: yt-dlp retrieves video metadata (title, duration, thumbnail).
-2. **Extract Subtitles**: YouTube subtitles are fetched via `youtube-transcript-api`; Bilibili subtitles are downloaded via yt-dlp and parsed from VTT/JSON.
+2. **Extract subtitles.** YouTube uses `youtube-transcript-api`, Bilibili uses yt-dlp to fetch VTT or JSON and PolyU Panopto uses the captions available in the video viewer.
 3. **AI Analysis**: The subtitle text is sent to DeepSeek (`deepseek-v4-flash`) with a system prompt that enforces detailed, evidence-backed output. Progress is streamed to the frontend via SSE.
 4. **Result Display**: The analysis is rendered in a tabbed interface (Overview, Outline, Key Points, Conclusions) with an interactive mind map powered by markmap.
 
@@ -102,7 +102,7 @@ Magical-Video/
     │   ├── components/           # Shared components
     │   │   ├── NavBar.vue
     │   │   ├── VideoInfo.vue
-    │   │   ├── CookieGuide.vue
+    │   │   ├── VideoSessionGuide.vue
     │   │   ├── AnalysisResult.vue
     │   │   ├── DownloadSection.vue
     │   │   ├── MindMap.vue
@@ -324,8 +324,8 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 
 1. Open `http://localhost:5173` in your browser.
 2. Click "AI解析" in the navigation bar.
-3. Paste a YouTube or Bilibili video URL into the input field.
-4. For Bilibili links, expand the "B站 Cookies" panel, paste your browser cookies, and click "保存 Cookies". (YouTube links skip this step.)
+3. Paste a YouTube, Bilibili or PolyU Panopto video URL into the input field.
+4. When Bilibili or PolyU Panopto requires sign-in, follow the instructions in the session panel.
 5. Click "解析视频". The video metadata (title, duration, thumbnail) will appear.
 6. Click "AI 分析". The backend extracts subtitles and sends them to DeepSeek. Progress is shown in real time.
 7. When complete, browse the results across four tabs: Overview, Outline, Key Points, and Conclusions. An interactive mind map is available under the "思维导图" tab.
@@ -344,22 +344,24 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 3. Select your preferred resolution from the grid.
 4. Click "下载视频" and keep the page open while the server prepares the file. Once the transfer starts, follow its progress in your browser's downloads list.
 
-### Bilibili Cookies
+### Connect a Bilibili or PolyU Panopto session
 
-Bilibili requires login cookies to access video information. To obtain them:
+1. Paste a video link and open the session panel under the input or from a sign-in prompt.
+2. Sign in on the official site linked in the panel. Open Chrome or Edge DevTools with `⌥⌘I` on Mac or `Ctrl+Shift+I` on Windows. Select **Application** at the top. If the tab is hidden, open the `»` menu.
+3. Under **Storage → Cookies**, select the site. Copy the value of `SESSDATA` for `www.bilibili.com` or `.ASPXAUTH` for `polyu.ap.panopto.com`.
+4. Paste the value into your local app and connect. Reloading or leaving the analysis page clears the session.
 
-1. Log in to [bilibili.com](https://www.bilibili.com) in your browser.
-2. Install a browser extension like "Get cookies.txt LOCALLY" (Chrome/Edge) or "cookies.txt" (Firefox).
-3. Navigate to any Bilibili video page, click the extension icon, and export cookies in Netscape format.
-4. Paste the exported text into the "B站 Cookies" panel in the app.
+### PolyU Panopto
 
-The cookies are validated to ensure they contain `DedeUserID`, `SESSDATA`, and `bili_jct`. They are written to a temporary file, passed to yt-dlp, and deleted immediately after the request.
+1. Paste a recording link from `polyu.ap.panopto.com` into the analysis page. Public recordings can be parsed immediately.
+2. If prompted, sign in on the official recording page, confirm playback and follow the shared session instructions.
+3. When captions are available, start AI analysis to send them to the configured DeepSeek service. The app makes an MP4 download available when Panopto offers it to the viewer, and hands the download over to the browser.
 
 ---
 
 ## 🔧 Technical Challenges
 
-**Bilibili 412/403 Anti-Scraping**. Bilibili rejects requests without valid login cookies. Fixed by implementing Netscape-format cookie parsing with mandatory field validation (`DedeUserID`, `SESSDATA`, `bili_jct`). Cookies are written to a temporary file, passed to yt-dlp, and deleted immediately after use.
+**Bilibili sessions**. The app accepts the `SESSDATA` value from browser DevTools. The server validates it, passes it to yt-dlp in a temporary Netscape file scoped to Bilibili and deletes the file after use.
 
 **YouTube SABR Streaming Block**. YouTube's Server-And-Browser-Rendering blocks the default web client. Worked around by switching to the Android player client (`youtube:player_client=android`). The trade-off is that HD formats (720p+) require a PO Token which is not yet implemented.
 
@@ -369,7 +371,7 @@ The cookies are validated to ensure they contain `DedeUserID`, `SESSDATA`, and `
 
 **AI Timeout on Long Videos**. Subtitle text from videos over 30 minutes could exceed 8,000 characters, causing 30-second timeouts. Increased the character limit to 25,000, max tokens to 10,000, and implemented a three-segment truncation strategy (first 20%, middle 60%, last 20%) to maintain coverage across the entire video.
 
-**Bilibili Cookie Validation**. Early validation only checked line count, allowing incomplete cookies to pass. Added mandatory field detection with specific error messages for missing `DedeUserID`, `SESSDATA`, or `bili_jct`.
+**Session retries**. Explicit sign-in errors from parsing, captions or downloads open the shared panel so users can refresh the affected site's session.
 
 **Cross-Platform Emoji Rendering**. Emoji appearance varied significantly across operating systems. Replaced all emoji with inline SVG icons (Feather-style, `stroke="currentColor"`) for consistent rendering.
 
