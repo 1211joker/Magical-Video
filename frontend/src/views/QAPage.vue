@@ -123,6 +123,9 @@
 
       <!-- 右侧：对话区 -->
       <div class="chat-area card">
+        <div class="chat-model">
+          <AIProviderSelect v-model="aiProvider" :disabled="loading" />
+        </div>
         <!-- 消息列表 -->
         <div class="chat-messages" ref="chatMessagesRef">
           <!-- 初始提示 -->
@@ -225,6 +228,7 @@
 <script setup>
 import { ref, reactive, onMounted, nextTick } from 'vue'
 import { askQuestion } from '../api/index.js'
+import AIProviderSelect from '../components/AIProviderSelect.vue'
 
 // 分析数据
 const analysisData = ref(null)
@@ -239,6 +243,10 @@ const openSections = reactive({
 
 // 对话状态
 const messages = ref([])
+const aiProvider = ref('')
+const aiSessionId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
+  byte.toString(16).padStart(2, '0')
+).join('')
 const questionInput = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
@@ -253,6 +261,7 @@ onMounted(() => {
       // 检查数据是否有效且不超过 24 小时
       if (data.subtitle_text && data.title) {
         analysisData.value = data
+        aiProvider.value = data.provider || ''
       }
     }
   } catch (e) {
@@ -330,7 +339,8 @@ async function handleSend() {
       question,
       analysisData.value.subtitle_text,
       summary,
-      chatHistory
+      chatHistory,
+      { provider: aiProvider.value, sessionId: aiSessionId },
     )
     messages.value.push({ role: 'assistant', content: result.answer })
   } catch (err) {
@@ -694,6 +704,11 @@ function parseMessageBlocks(content) {
   min-height: 400px;
   padding: 0;
   overflow: hidden;
+}
+
+.chat-model {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
 }
 
 .chat-messages {

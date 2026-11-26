@@ -26,6 +26,13 @@
             <span class="solution-label">解决方案</span>
             <span>{{ item.solution }}</span>
           </div>
+          <p v-if="item.verification" class="issue-verification">
+            <span class="solution-label">真实视频实测</span>
+            {{ item.verification }}
+            <a v-if="item.video" :href="item.video.url" target="_blank" rel="noopener noreferrer">
+              {{ item.video.title }}
+            </a>
+          </p>
         </div>
       </div>
     </section>
@@ -58,6 +65,23 @@
 <script setup>
 const solvedIssues = [
   {
+    id: 19,
+    title: 'AI 分析和问答可切换模型',
+    description: '早期的字幕分析和问答固定使用 DeepSeek 官方服务。',
+    solution: '接入 OpenAI GPT 和 OpenCode Go 的 DeepSeek。分析页和问答页都可以选择已配置的模型，问答默认沿用生成摘要的模型。API Key 由后端读取。',
+  },
+  {
+    id: 15,
+    title: '连续追问按上一轮回答的编号展开',
+    description: '字幕和摘要紧贴当前问题时，资料里的编号可能干扰追问。首次实测中，OpenAI gpt-5.4-mini 将上一轮的第二点「合并分支」答成了「保存提交快照」。',
+    solution: '把字幕和摘要移到对话历史之前，让上一轮回答紧接着本次追问。同一聊天会发送最近 5 轮已完成的问答，模型先按上一轮的编号定位，再结合字幕补充。',
+    verification: '2026-11-26 用同一个公开视频的 2,393 个字幕字符进行复测。OpenAI 的 gpt-5.4-mini、gpt-6.2-sol 和 OpenCode Go 的 deepseek-v4.1-flash 均完成分析并列出三个要点。追问「第二点能再展开讲讲吗」时，三个模型都接上了各自上一轮回答中的「合并分支」。',
+    video: {
+      title: 'Git Explained in 100 Seconds',
+      url: 'https://www.youtube.com/watch?v=hwP7WQkmECE',
+    },
+  },
+  {
     id: 18,
     title: '接入理大 Panopto 课程录像',
     description: 'Panopto 的公开录像可以直接解析。校内录像需要使用能够访问课程的登录会话。',
@@ -74,12 +98,6 @@ const solvedIssues = [
     title: '大文件由浏览器直接下载',
     description: '旧版页面把完整视频读成 Blob 后才触发保存，文件越大，页面内存占用越高。',
     solution: '文件准备期间，页面只查询任务状态。准备完成后，浏览器的下载管理器直接接收文件并显示传输进度。',
-  },
-  {
-    id: 15,
-    title: 'AI 问答现在可以连续追问',
-    description: '旧版问答只发送当前问题，遇到「第二点能再展开讲讲吗」这样的追问时，模型看不到上一轮回答。',
-    solution: '同一聊天会发送最近 5 轮已完成的问答。用真实视频打乱三条建议的原顺序后追问，DeepSeek 正确展开了上一轮回答里重新编号的第二点。',
   },
   {
     id: 16,
@@ -317,6 +335,18 @@ const pendingIssues = [
   margin-right: 0.5em;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.issue-verification {
+  margin-top: 10px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.7;
+}
+
+.issue-verification a {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
 }
 
 .issue-impact {

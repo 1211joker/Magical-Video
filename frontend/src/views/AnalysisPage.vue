@@ -89,18 +89,19 @@
           该录像没有可用字幕，暂时无法生成摘要和问答。
         </p>
 
-        <!-- AI 分析按钮 -->
-        <div
-          v-if="videoInfo.has_captions !== false && !analysisResult && !analyzing && progressSteps.length === 0"
-          class="analyze-area"
-        >
-          <button class="btn-analyze" @click="handleAnalyze">
+        <div v-if="videoInfo.has_captions !== false" class="analyze-area">
+          <AIProviderSelect v-model="aiProvider" :disabled="analyzing" />
+          <button
+            v-if="!analyzing && (progressSteps.length === 0 || analysisResult)"
+            class="btn-analyze"
+            @click="handleAnalyze"
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
             </svg>
-            AI 分析视频内容
+            {{ analysisResult ? '重新分析视频' : 'AI 分析视频内容' }}
           </button>
-          <p v-if="videoInfo.platform === 'panopto'" class="platform-note">开始分析后，课程字幕会发送给 DeepSeek。</p>
+          <p v-if="videoInfo.platform === 'panopto'" class="platform-note">分析时会把课程字幕发送给所选的 AI 服务。</p>
         </div>
 
         <!-- 分析错误 -->
@@ -187,6 +188,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { parseVideo, startAnalysis } from '../api/index.js'
 import { sessionSiteFor } from '../videoSessions.js'
+import AIProviderSelect from '../components/AIProviderSelect.vue'
 import VideoInfo from '../components/VideoInfo.vue'
 import AnalysisResult from '../components/AnalysisResult.vue'
 import DownloadSection from '../components/DownloadSection.vue'
@@ -205,6 +207,7 @@ const inputSite = computed(() => sessionSiteFor(urlInput.value))
 
 // AI 分析状态
 const analyzing = ref(false)
+const aiProvider = ref('')
 const analysisResult = ref(null)
 const analysisError = ref('')
 const progressSteps = reactive([])
@@ -221,7 +224,10 @@ onMounted(() => {
       const state = JSON.parse(saved)
       if (state.urlInput) urlInput.value = state.urlInput
       if (state.videoInfo) videoInfo.value = state.videoInfo
-      if (state.analysisResult) analysisResult.value = state.analysisResult
+      if (state.analysisResult) {
+        analysisResult.value = state.analysisResult
+        aiProvider.value = state.analysisResult.provider || ''
+      }
       if (typeof state.cookies === 'string' && state.cookies) {
         // 旧 B站会话迁移到当前页，保存解析状态时移除凭证副本。
         sessions.bilibili = { cookies: state.cookies }
@@ -400,7 +406,8 @@ function handleAnalyze() {
         active.status = 'failed'
         active.message = analysisError.value
       }
-    }
+    },
+    aiProvider.value,
   )
 }
 
@@ -574,6 +581,10 @@ onBeforeUnmount(() => {
 
 /* AI 分析按钮 */
 .analyze-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   margin-top: 20px;
   text-align: center;
 }

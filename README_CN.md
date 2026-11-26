@@ -2,7 +2,7 @@
 
 # 🎬 Magical Video
 
-Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、Bilibili 或理大 Panopto 视频链接，程序提取可用字幕，交由 DeepSeek 生成概述、大纲、要点、总结和交互式思维导图。分析完成后，可以根据字幕向 AI 追问。Panopto 录像在平台为当前账号提供官方下载时也可离线保存。
+Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、Bilibili 或理大 Panopto 视频链接后，程序提取可用字幕，通过所选模型生成概述、大纲、要点、总结和交互式思维导图。分析完成后，可以根据字幕向 AI 追问。Panopto 录像在平台为当前账号提供官方下载时也可离线保存。
 
 核心价值在于 AI 分析流程：一段 30 分钟的视频，可以在不到一分钟内浏览其结构化拆解结果（概述、大纲、关键要点、结论及知识树思维导图），还可通过 AI 问答针对特定话题深入追问。
 
@@ -22,7 +22,7 @@ Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、
 
 1. **解析**：yt-dlp 获取视频元数据（标题、时长、封面）。
 2. **提取字幕**。YouTube 使用 `youtube-transcript-api`，Bilibili 使用 yt-dlp 读取 VTT 或 JSON，理大 Panopto 使用播放器提供的带时间戳字幕。
-3. **AI 分析**：字幕文本发送至 DeepSeek（`deepseek-v4-flash` 模型），系统提示词要求输出详实、有原文依据的结构化结果。分析进度通过 SSE 实时推送到前端。
+3. **AI 分析**。字幕发送给所选模型，生成有原文依据的结构化结果。分析进度通过 SSE 实时推送到前端。
 4. **结果展示**：选项卡式界面呈现概述、大纲、要点、结论四个维度，并包含基于 markmap 的交互式思维导图。
 
 大纲和要点保留原文中的术语、数字、案例和直接引用。思维导图将相近内容归到同一主题，最多展示 3 层，打开时展开全部节点。
@@ -34,7 +34,7 @@ Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、
 AI 分析完成后，可以就视频内容向 AI 提问，获取基于字幕原文的回答：
 
 1. **上下文加载**：问答页面自动加载最近的分析结果，在可折叠侧边栏中展示完整的内容大纲（概述、大纲、要点、总结）。
-2. **自由提问**：输入任何关于视频的问题 — 后端将字幕文本和分析摘要发送给 DeepSeek，系统提示词要求回答必须引用原文证据。
+2. **自由提问**。后端将字幕、分析摘要和近期对话发送给所选模型，并要求回答引用原文证据。
 3. **聊天界面**：简洁的对话式 UI，气泡消息、原文引用 blockquote 样式、AI 思考时的打字动画。
 
 问答系统提示词要求 AI 严格基于字幕内容回答，用「」标注原文引用，视频未涉及的内容如实告知。
@@ -55,7 +55,7 @@ AI 分析完成后，可以就视频内容向 AI 提问，获取基于字幕原�
 |------|------|
 | 后端框架 | FastAPI (Python) |
 | 下载引擎 | yt-dlp |
-| AI 服务 | DeepSeek API (v4-flash) |
+| AI 服务 | DeepSeek 官方、OpenAI、OpenCode Go |
 | YouTube 字幕 | youtube-transcript-api |
 | 前端框架 | Vue 3 (Composition API, SFC) |
 | 构建工具 | Vite |
@@ -83,8 +83,9 @@ Magical-Video/
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp 子进程封装
 │       ├── subtitle_service.py   # 字幕提取与解析
-│       ├── deepseek_service.py   # DeepSeek 分析服务
-│       └── deepseek_client.py    # DeepSeek HTTP 客户端（含重试）
+│       ├── analysis_service.py   # 字幕分析
+│       ├── qa_service.py         # 视频问答上下文
+│       └── ai_client.py         # 模型配置、HTTP 请求和重试
 │
 ├── nginx.conf                     # 生产环境 nginx 配置
 ├── Dockerfile                     # 后端容器镜像
@@ -127,7 +128,7 @@ Magical-Video/
 - Python 3.10 及以上
 - Node.js 18 及以上
 - ffmpeg（推荐安装；yt-dlp 合并视频和音频时需要）
-- DeepSeek API 密钥（[platform.deepseek.com](https://platform.deepseek.com/)）
+- 至少一个 [AI 服务](#-环境变量)的 API Key，用于字幕分析和问答
 - yt-dlp（通过 pip 自动安装）
 - **YouTube 代理**（国内网络无法直连 YouTube，需配置代理才能使用 YouTube 相关功能；见下方[代理配置](#代理配置)）
 
@@ -138,7 +139,7 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env              # 编辑填入 DEEPSEEK_API_KEY
+cp .env.example .env              # 初次配置时执行，再填入所选服务的 API Key
 uvicorn main:app --reload --port 8000
 ```
 
@@ -171,14 +172,14 @@ Vite 开发服务器自动将 `/api` 请求代理到后端 `localhost:8000`。
            ▼
 ┌──────────────────────────┐
 │  backend (python:3.12)   │  ← FastAPI + uvicorn
-│  :8000                   │     yt-dlp、DeepSeek、接口限流
+│  :8000                   │     yt-dlp、AI 模型调用、接口限流
 └──────────────────────────┘
 ```
 
 #### 前置条件
 
 - **Docker** ≥ 20.10 和 **Docker Compose** ≥ 2.0
-- DeepSeek API 密钥（[platform.deepseek.com](https://platform.deepseek.com/)）
+- 至少一个 AI 服务的 API Key，用于字幕分析和问答
 - （可选）HTTP 代理，如果所在地区无法直连 YouTube
 
 #### 快速开始
@@ -196,7 +197,7 @@ vim backend/.env
 编辑 `backend/.env`，填入：
 
 ```bash
-DEEPSEEK_API_KEY=sk-your-key-here       # 必填
+DEEPSEEK_API_KEY=sk-your-key-here       # 示例，也可使用 OPENAI_API_KEY 或 OPENCODE_GO_API_KEY
 # YTDLP_PROXY=http://proxy.example.net:7890 # 可选，填写后端容器可访问的代理
 ALLOWED_ORIGINS=https://your-domain.com # 可选 — 生产环境 CORS 白名单
 ```
@@ -292,7 +293,7 @@ volumes:
 | 问题 | 检查方法 |
 |------|----------|
 | `8080 端口已被占用` | 在 `docker-compose.yml` 中调整宿主机映射端口，并同步访问地址和宿主反向代理 |
-| 后端无法连接 DeepSeek | 检查 `backend/.env` 中的 `DEEPSEEK_API_KEY`，运行 `docker compose logs backend` 查看日志 |
+| 后端无法连接 AI 服务 | 检查 `backend/.env` 中对应的 API Key、模型 ID 和后端网络，运行 `docker compose logs backend` 查看日志 |
 | YouTube 功能不可用 | 在 `backend/.env` 中配置 `YTDLP_PROXY`，然后 `docker compose up -d --build` 重建 |
 | 浏览器显示空白页 | 在宿主机检查 `127.0.0.1:8080` 是否可用，再检查 HTTPS 入口的转发地址 |
 | 容器反复重启 | `docker compose logs backend` — 常见原因为缺少 `.env` 或 API Key 无效 |
@@ -333,7 +334,7 @@ YTDLP_PROXY=http://127.0.0.1:7890
 3. 在输入框中粘贴 YouTube、Bilibili 或理大 Panopto 视频链接。
 4. B站或理大 Panopto 需要登录时，按「连接会话」面板的指引填写。
 5. 点击"解析视频"，等待视频信息（标题、时长、封面）加载。
-6. 点击"AI 分析"，后端会自动提取字幕并发送给 DeepSeek 进行分析，进度实时显示。
+6. 选择 AI 模型并点击「AI 分析视频内容」。后端提取字幕并交给所选模型，页面实时显示进度。
 7. 分析完成后，在四个选项卡中浏览结果：概述、大纲、要点、总结。"思维导图"选项卡提供交互式知识树。
 
 ### AI 问答
@@ -361,7 +362,7 @@ YTDLP_PROXY=http://127.0.0.1:7890
 
 1. 在「AI 解析」中粘贴 `https://polyu.ap.panopto.com/Panopto/Pages/Viewer.aspx?id=…` 并解析。公开视频可直接获取信息。
 2. 如页面提示连接会话，在官方课程页登录并确认可以播放，再按上面的共用流程连接。
-3. 有字幕时，点击「AI 分析视频内容」，字幕会发送给项目配置的 DeepSeek，结果可用于后续问答。Panopto 为当前账号提供官方下载时，浏览器直接接管 MP4 下载。
+3. 有字幕时，选择模型并点击「AI 分析视频内容」。字幕会发送给所选服务，结果可用于后续问答。Panopto 为当前账号提供官方下载时，浏览器直接接管 MP4 下载。
 
 ---
 
@@ -405,12 +406,19 @@ YTDLP_PROXY=http://127.0.0.1:7890
 
 | 变量 | 是否必填 | 说明 |
 |------|----------|------|
-| `DEEPSEEK_API_KEY` | 是 | DeepSeek API 密钥 |
+| `DEEPSEEK_API_KEY` | 三家至少配置一家 | DeepSeek 官方 API 密钥 |
+| `OPENAI_API_KEY` | 同上 | OpenAI API 平台的密钥 |
+| `OPENCODE_GO_API_KEY` | 同上 | 开通 OpenCode Go 的工作区 API Key |
+| `DEEPSEEK_MODEL` | 否 | 默认 `deepseek-v4-flash` |
+| `OPENAI_MODEL` | 否 | Responses API 的模型 ID，默认 `gpt-5.4-mini` |
+| `OPENCODE_GO_MODEL` | 否 | Go 模型 ID，默认 `deepseek-v4.1-flash` |
 | `YTDLP_PROXY` | 否 | 访问 YouTube 的 HTTP 或 SOCKS5 代理地址 |
 | `ALLOWED_ORIGINS` | 否 | CORS 跨域白名单（逗号分隔）。默认 `*`（开发模式允许所有来源），生产环境设为具体域名 |
 | `YTDLP_NO_CHECK_CERTIFICATES` | 否 | 跳过 yt-dlp SSL 证书验证。默认 `false`（安全），仅在国内网络劫持环境下临时设为 `true` |
 
-复制 `backend/.env.example` 为 `backend/.env` 并填入对应值。
+首次配置时，从 `backend/.env.example` 创建 `backend/.env`。把 API Key 写入对应项并重启后端，即可在分析页和问答页选择已配置的模型。默认按 DeepSeek 官方、OpenAI、OpenCode Go 的顺序选择第一个已配置的服务。问答页优先沿用生成该摘要的服务。
+
+API Key 可分别从 DeepSeek 平台、OpenAI API 平台或 OpenCode Console 获取。OpenCode Go 的对话接口面向编码代理，DeepSeek 模型还需要相应的订阅和区域权限。[DeepSeek 平台](https://platform.deepseek.com/)、[OpenAI API Keys](https://platform.openai.com/api-keys)、[OpenCode Go](https://opencode.ai/docs/console/go/)
 
 ---
 

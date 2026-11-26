@@ -2,7 +2,7 @@
 
 # 🎬 Magical Video
 
-Magical Video analyzes videos from YouTube, Bilibili and PolyU Panopto. It sends available captions to DeepSeek to generate a summary and interactive mind map, then uses the captions to answer follow-up questions. Panopto recordings can be downloaded when the platform offers the viewer an official download.
+Magical Video analyzes videos from YouTube, Bilibili and PolyU Panopto. It sends available captions to the selected AI model to generate a summary and interactive mind map, then uses the captions to answer follow-up questions. Panopto recordings can be downloaded when the platform offers the viewer an official download.
 
 The core value is the AI analysis pipeline: instead of watching a 30-minute video, you can skim a structured breakdown (overview, outline, key points, conclusions, and a knowledge-tree mind map) in under a minute, then dive deeper into specific topics through AI-powered Q&A.
 
@@ -22,7 +22,7 @@ The primary workflow takes a video URL and produces a structured analysis in fou
 
 1. **Parse**: yt-dlp retrieves video metadata (title, duration, thumbnail).
 2. **Extract subtitles.** YouTube uses `youtube-transcript-api`, Bilibili uses yt-dlp to fetch VTT or JSON and PolyU Panopto uses the captions available in the video viewer.
-3. **AI Analysis**: The subtitle text is sent to DeepSeek (`deepseek-v4-flash`) with a system prompt that enforces detailed, evidence-backed output. Progress is streamed to the frontend via SSE.
+3. **AI Analysis**: The selected model uses the captions to generate a structured, evidence-backed analysis. Progress is streamed to the frontend via SSE.
 4. **Result Display**: The analysis is rendered in a tabbed interface (Overview, Outline, Key Points, Conclusions) with an interactive mind map powered by markmap.
 
 The outline and key points retain relevant terms, numbers, examples, and quotes. The mind map groups related ideas into up to three levels and opens fully expanded.
@@ -34,7 +34,7 @@ The outline and key points retain relevant terms, numbers, examples, and quotes.
 After the AI analysis, you can ask questions about the video content and get answers grounded in the actual subtitles:
 
 1. **Context**: The Q&A page loads the most recent analysis result, displaying the full content outline (overview, outline, key points, conclusions) in a collapsible sidebar.
-2. **Ask Questions**: Type any question about the video — the backend sends the subtitle text and analysis summary to DeepSeek, with a system prompt that requires answers to cite original evidence.
+2. **Ask Questions**: Type any question about the video — the backend sends the captions, analysis summary and recent conversation to the selected model, with a system prompt that requires answers to cite original evidence.
 3. **Chat Interface**: A clean chat UI with message bubbles, blockquote-styled citations, and a typing indicator while waiting for the AI response.
 
 The Q&A system prompt instructs the model to base answers strictly on subtitle content, quote original text with「」marks, and honestly state when information is not covered in the video.
@@ -55,7 +55,7 @@ The application queries available formats and resolutions, then uses yt-dlp to p
 |-----------|-----------|
 | Backend framework | FastAPI (Python) |
 | Download engine | yt-dlp |
-| AI provider | DeepSeek API (v4-flash) |
+| AI providers | DeepSeek, OpenAI, OpenCode Go |
 | YouTube subtitles | youtube-transcript-api |
 | Frontend framework | Vue 3 (Composition API, SFCs) |
 | Build tool | Vite |
@@ -83,8 +83,9 @@ Magical-Video/
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp subprocess wrapper
 │       ├── subtitle_service.py   # Subtitle extraction and parsing
-│       ├── deepseek_service.py   # DeepSeek analysis service
-│       └── deepseek_client.py    # DeepSeek HTTP client with retry
+│       ├── analysis_service.py   # Subtitle analysis
+│       ├── qa_service.py         # Question-answering context
+│       └── ai_client.py         # AI configuration, HTTP requests and retries
 │
 ├── nginx.conf                     # Production nginx configuration
 ├── Dockerfile                     # Backend container image
@@ -127,7 +128,7 @@ Magical-Video/
 - Python 3.10 or later
 - Node.js 18 or later
 - ffmpeg (recommended; yt-dlp uses it for merging video and audio streams)
-- A DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com/))
+- An API key for at least one AI provider to use analysis and Q&A
 - yt-dlp (installed automatically via pip)
 - **A proxy for YouTube access** (required if you're in a region where YouTube is blocked; see [Proxy Configuration](#proxy-configuration) below)
 
@@ -138,7 +139,7 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env              # Edit to add your DEEPSEEK_API_KEY
+cp .env.example .env              # First-time setup. Add the selected provider's API key.
 uvicorn main:app --reload --port 8000
 ```
 
@@ -171,14 +172,14 @@ Browser (127.0.0.1:8080 on the host or the configured HTTPS domain)
            ▼
 ┌──────────────────────────┐
 │  backend (python:3.12)   │  ← FastAPI + uvicorn
-│  :8000                   │     yt-dlp, DeepSeek, rate limiting
+│  :8000                   │     yt-dlp, AI model requests, rate limiting
 └──────────────────────────┘
 ```
 
 #### Prerequisites
 
 - **Docker** ≥ 20.10 and **Docker Compose** ≥ 2.0
-- A DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com/))
+- An API key for at least one AI provider to use analysis and Q&A
 - (Optional) An HTTP proxy if YouTube is blocked in your region
 
 #### Quick Start
@@ -196,7 +197,7 @@ vim backend/.env
 Edit `backend/.env` and fill in:
 
 ```bash
-DEEPSEEK_API_KEY=sk-your-key-here       # Required
+DEEPSEEK_API_KEY=sk-your-key-here       # Example. OPENAI_API_KEY or OPENCODE_GO_API_KEY also works.
 # YTDLP_PROXY=http://proxy.example.net:7890 # Optional proxy reachable from the backend container
 ALLOWED_ORIGINS=https://your-domain.com # Optional — CORS whitelist in production
 ```
@@ -292,7 +293,7 @@ volumes:
 | Problem | Check |
 |---------|-------|
 | `port 8080 already in use` | Change the published host port in `docker-compose.yml` and update the access URL and host reverse proxy |
-| Backend can't connect to DeepSeek | Verify `DEEPSEEK_API_KEY` in `backend/.env`. Check `docker compose logs backend` |
+| Backend can't connect to an AI provider | Check the API key, model ID and backend network. See `docker compose logs backend` |
 | YouTube features don't work | Configure `YTDLP_PROXY` in `backend/.env`, then `docker compose up -d --build` |
 | `ERR_EMPTY_RESPONSE` in browser | Check `127.0.0.1:8080` on the Docker host, then check the upstream address of the HTTPS proxy |
 | Container keeps restarting | `docker compose logs backend` — often a missing `.env` or invalid API key |
@@ -333,7 +334,7 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 3. Paste a YouTube, Bilibili or PolyU Panopto video URL into the input field.
 4. When Bilibili or PolyU Panopto requires sign-in, follow the instructions in the session panel.
 5. Click "解析视频". The video metadata (title, duration, thumbnail) will appear.
-6. Click "AI 分析". The backend extracts subtitles and sends them to DeepSeek. Progress is shown in real time.
+6. Select a model and start AI analysis. The backend extracts captions and sends them to the selected model. Progress is shown in real time.
 7. When complete, browse the results across four tabs: Overview, Outline, Key Points, and Conclusions. An interactive mind map is available under the "思维导图" tab.
 
 ### AI Q&A
@@ -361,7 +362,7 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 
 1. Paste a recording link from `polyu.ap.panopto.com` into the analysis page. Public recordings can be parsed immediately.
 2. If prompted, sign in on the official recording page, confirm playback and follow the shared session instructions.
-3. When captions are available, start AI analysis to send them to the configured DeepSeek service. The app makes an MP4 download available when Panopto offers it to the viewer, and hands the download over to the browser.
+3. When captions are available, select a model and start AI analysis to send the captions to that provider. The app makes an MP4 download available when Panopto offers it to the viewer, and hands the download over to the browser.
 
 ---
 
@@ -405,12 +406,19 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DEEPSEEK_API_KEY` | Yes | DeepSeek API key |
+| `DEEPSEEK_API_KEY` | At least one provider key | DeepSeek API key |
+| `OPENAI_API_KEY` | At least one provider key | OpenAI API platform key |
+| `OPENCODE_GO_API_KEY` | At least one provider key | OpenCode API key for a workspace with Go |
+| `DEEPSEEK_MODEL` | No | Defaults to `deepseek-v4-flash` |
+| `OPENAI_MODEL` | No | Responses API model ID. Defaults to `gpt-5.4-mini` |
+| `OPENCODE_GO_MODEL` | No | Go model ID. Defaults to `deepseek-v4.1-flash` |
 | `YTDLP_PROXY` | No | HTTP or SOCKS5 proxy for YouTube access |
 | `ALLOWED_ORIGINS` | No | CORS allowed origins (comma-separated). Default: `*` (all origins in dev). Set to your domain(s) in production |
 | `YTDLP_NO_CHECK_CERTIFICATES` | No | Skip SSL cert verification for yt-dlp. Default: `false`. Only set to `true` in regions with SSL interference |
 
-Copy `backend/.env.example` to `backend/.env` and fill in the values.
+On first setup, copy `backend/.env.example` to `backend/.env`. Add your API keys and restart the backend. Select a configured model on the analysis or Q&A page. The default is the first configured provider in this order, DeepSeek, OpenAI, then OpenCode Go. Q&A initially uses the provider that generated the summary when available.
+
+OpenCode Go's chat inference is designed for coding agents. Its DeepSeek models require the applicable subscription and region permissions. [DeepSeek platform](https://platform.deepseek.com/), [OpenAI API keys](https://platform.openai.com/api-keys), [OpenCode Go](https://opencode.ai/docs/console/go/)
 
 ---
 

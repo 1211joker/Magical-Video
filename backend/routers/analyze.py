@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from urllib.parse import unquote, urlsplit
 import httpx
-from models.schemas import ParseRequest, ParseResponse
-from services.deepseek_service import analyze_subtitles
+from models.schemas import AnalyzeVideoRequest, ParseRequest, ParseResponse
+from services.ai_client import select_provider
+from services.analysis_service import analyze_subtitles
 from services.panopto_service import PanoptoError
 from services.video_service import open_video
 from services.video_session import BilibiliSessionError
@@ -130,13 +131,13 @@ async def proxy_thumbnail(url: str, request: Request):
 
 @router.post("/analyze-stream")
 @limiter.limit("5/minute")
-async def analyze_video_stream(req: ParseRequest, request: Request):
+async def analyze_video_stream(req: AnalyzeVideoRequest, request: Request):
     """
     AI 分析视频字幕，通过 SSE 实时推送进度。
 
     前端调用方式：
         POST /api/analyze-stream
-        Body: { "url": "https://...", "cookies": "..." }
+        Body: { "url": "https://...", "provider": "openai" }
 
     SSE 事件格式：
         data: {"step": "parse", "status": "processing", "message": "..."}
@@ -193,7 +194,8 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
             yield _sse("analyze", "processing", "AI 正在分析视频内容，请稍候...")
 
             try:
-                result = await analyze_subtitles(subtitle_data.plain_text, video_info.title)
+                provider = select_provider(req.provider)
+                result = await analyze_subtitles(subtitle_data.plain_text, video_info.title, provider)
             except RuntimeError as e:
                 yield _sse("analyze", "failed", str(e))
                 return
@@ -201,6 +203,7 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
             # 成功！推送最终结果（含四维度 + 字幕片段 + 字幕全文用于 QA）
             yield _sse("analyze", "done", "分析完成", {
                 "title": result.title,
+                "provider": provider.id,
                 "overview": result.overview,
                 "outline": [item.model_dump() for item in result.outline],
                 "key_points": [item.model_dump() for item in result.key_points],

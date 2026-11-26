@@ -20,7 +20,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from config import ALLOWED_ORIGINS
 from limiter import limiter
-from routers import analyze, download, qa
+from routers import ai, analyze, download, qa
+from services.ai_client import AIServiceError
 from services.download_service import DownloadJobs
 from services.panopto_service import PanoptoError
 from services.video_session import BilibiliSessionError
@@ -61,6 +62,11 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+@app.exception_handler(AIServiceError)
+async def handle_ai_error(_request: Request, error: AIServiceError):
+    return JSONResponse(status_code=error.status_code, content={"detail": str(error)})
+
+
 @app.exception_handler(YouTubeNetworkUnavailable)
 async def handle_youtube_network_unavailable(_request: Request, error: YouTubeNetworkUnavailable):
     return JSONResponse(status_code=503, content={"detail": str(error), "code": error.code})
@@ -92,6 +98,7 @@ async def handle_bilibili_session_error(_request: Request, error: BilibiliSessio
 
 
 # 注册路由
+app.include_router(ai.router)
 app.include_router(analyze.router)
 app.include_router(download.router)
 app.include_router(qa.router)

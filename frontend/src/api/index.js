@@ -13,6 +13,12 @@ function videoRequest(url, { cookies, bilibiliSession, panoptoSession } = {}) {
   return body
 }
 
+export async function getAIProviders(signal) {
+  const response = await fetch(`${API_BASE}/ai/providers`, { signal, cache: 'no-store' })
+  if (!response.ok) throw await readApiError(response, '模型列表加载失败')
+  return response.json()
+}
+
 /**
  * 解析视频链接 — 获取元数据（标题、封面、时长等）
  */
@@ -39,17 +45,18 @@ export async function parseVideo(url, credentials) {
  *   credentials - 视频平台会话（可选）
  *   onEvent   - 收到事件时的回调，参数 { step, status, message, result? }
  *   onError   - 发生错误时的回调
+ *   provider  - 所选 AI 服务（可选）
  *
  * 返回：
  *   { abort: () => void } — 用于取消分析
  */
-export function startAnalysis(url, credentials, onEvent, onError) {
+export function startAnalysis(url, credentials, onEvent, onError, provider) {
   const controller = new AbortController()
 
   fetch(`${API_BASE}/analyze-stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(videoRequest(url, credentials)),
+    body: JSON.stringify({ ...videoRequest(url, credentials), provider: provider || undefined }),
     signal: controller.signal
   }).then(async (response) => {
     if (!response.ok) {
@@ -110,11 +117,12 @@ export function startAnalysis(url, credentials, onEvent, onError) {
  *   subtitleText     - 字幕全文（作为回答依据）
  *   analysisSummary  - AI 分析结果摘要（辅助理解上下文）
  *   chatHistory      - 之前的问答消息，按时间顺序排列
+ *   options          - 所选 AI 服务和会话编号（可选）
  *
  * 返回：
  *   { answer: string }
  */
-export async function askQuestion(question, subtitleText, analysisSummary, chatHistory = []) {
+export async function askQuestion(question, subtitleText, analysisSummary, chatHistory = [], { provider, sessionId } = {}) {
   const res = await fetch(`${API_BASE}/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -123,11 +131,12 @@ export async function askQuestion(question, subtitleText, analysisSummary, chatH
       subtitle_text: subtitleText,
       analysis_summary: analysisSummary,
       chat_history: chatHistory,
+      provider: provider || undefined,
+      session_id: sessionId,
     })
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || '问答请求失败')
+    throw await readApiError(res, '问答请求失败')
   }
   return res.json()
 }

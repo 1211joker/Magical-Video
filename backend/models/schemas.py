@@ -3,6 +3,10 @@ Pydantic 数据模型 — 定义前后端交互的数据格式
 """
 from pydantic import BaseModel, SecretStr
 from typing import Literal, Optional
+from uuid import UUID
+
+
+AIProviderId = Literal["deepseek", "openai", "opencode-go"]
 
 
 # ========== 请求模型 ==========
@@ -13,6 +17,10 @@ class ParseRequest(BaseModel):
     cookies: Optional[str] = None  # 旧客户端的 Netscape Cookie 文本
     bilibili_session: Optional[SecretStr] = None  # B站 SESSDATA
     panopto_session: Optional[SecretStr] = None  # 仅用于本次理大 Panopto 请求
+
+
+class AnalyzeVideoRequest(ParseRequest):
+    provider: Optional[AIProviderId] = None
 
 
 # ========== 响应模型 ==========
@@ -95,11 +103,25 @@ class QaRequest(BaseModel):
     subtitle_text: str                  # 字幕全文（作为回答依据）
     analysis_summary: str = ""          # AI 分析结果摘要（辅助理解上下文）
     chat_history: list[dict] = []         # 之前的用户消息和回答，按时间顺序排列
+    provider: Optional[AIProviderId] = None
+    session_id: Optional[UUID] = None   # 同一轮视频问答使用同一个会话编号
 
 
 class QaResponse(BaseModel):
     """AI 问答响应"""
     answer: str
+
+
+class AIProviderInfo(BaseModel):
+    id: AIProviderId
+    label: str
+    model: str
+    configured: bool
+
+
+class AIProvidersResponse(BaseModel):
+    default_provider: Optional[AIProviderId]
+    providers: list[AIProviderInfo]
 
 
 # ========== 通用响应 ==========
