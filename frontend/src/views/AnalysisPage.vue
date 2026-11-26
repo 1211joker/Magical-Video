@@ -155,17 +155,22 @@
       <div v-if="previewVideo || taskId || videoId" class="result-area">
         <section v-if="previewVideo" class="video-preview card" aria-label="当前视频">
           <VideoInfo :key="previewVideo.source_url" :info="previewVideo" />
-          <div v-if="canStartAnalysis || canDownload" class="video-actions">
-            <div v-if="canStartAnalysis" class="video-primary-actions">
-              <button class="btn-primary btn-compact" type="button" :disabled="analyzing" @click="handleAnalyze">
+          <div v-if="canExtractSubtitles || canDownload" class="video-actions">
+            <div v-if="canExtractSubtitles" class="video-primary-actions">
+              <button v-if="canStartAnalysis" class="btn-primary btn-compact" type="button"
+                      :disabled="analyzing || extractingSubtitles" @click="handleAnalyze">
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 15v5m-2.5-2.5h5"/>
                 </svg>
                 {{ analyzing ? '提交分析中…' : '开始分析' }}
               </button>
-              <AIProviderSelect v-model="provider" :disabled="analyzing" />
-              <label v-if="canArchive" class="study-check save-option">
+              <button class="btn-secondary btn-compact btn-extract-subtitles" type="button"
+                      :disabled="analyzing || extractingSubtitles" @click="handleExtractSubtitles">
+                {{ extractingSubtitles ? '正在提取字幕…' : '提取字幕' }}
+              </button>
+              <AIProviderSelect v-if="canStartAnalysis" v-model="provider" :disabled="analyzing" />
+              <label v-if="canStartAnalysis && canArchive" class="study-check save-option">
                 <input v-model="saveToLibrary" type="checkbox" :disabled="analyzing">
                 保存到资料库
               </label>
@@ -238,7 +243,7 @@
           <div v-if="!taskId && !videoId && progressSteps.length > 0 && !visibleResult" class="progress-area card">
             <div class="progress-header">
               <span>{{ progressStatusText }}</span>
-              <button v-if="showRetryButton" class="btn-retry" @click="handleImmediateAnalyze">
+              <button v-if="showRetryButton" class="btn-retry" :disabled="extractingSubtitles" @click="handleImmediateAnalyze">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
@@ -298,7 +303,12 @@
           </div>
           <AnalysisResult :key="taskId || videoId || parsedVideoUrl" :result="visibleResult" />
         </section>
-
+        <SubtitleViewer
+          v-else-if="canExtractSubtitles && extractedSubtitles.length"
+          class="card extracted-subtitles"
+          :segments="extractedSubtitles"
+          :title="previewVideo.title"
+        />
       </div>
     </Transition>
   </div>
@@ -307,7 +317,7 @@
 <script setup>
 import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { parseVideo, startAnalysis } from '../api/index.js'
+import { extractSubtitles, parseVideo, startAnalysis } from '../api/index.js'
 import { studyApi, studyRequestId } from '../api/study.js'
 import { useAIProvider } from '../composables/useAIProvider.js'
 import { useAnalysisRecords } from '../composables/useAnalysisRecords.js'
@@ -319,6 +329,7 @@ import { sessionSiteFor, useVideoSessions } from '../videoSessions.js'
 import VideoInfo from '../components/VideoInfo.vue'
 import AIProviderSelect from '../components/AIProviderSelect.vue'
 import AnalysisResult from '../components/AnalysisResult.vue'
+import SubtitleViewer from '../components/SubtitleViewer.vue'
 import DownloadSection from '../components/DownloadSection.vue'
 import StudyManagementDialog from '../components/StudyManagementDialog.vue'
 import YouTubeNetworkDialog from '../components/YouTubeNetworkDialog.vue'
@@ -364,7 +375,10 @@ const progressSteps = reactive([])
 const submittedTaskId = ref('')
 const taskBusy = ref(false)
 const retryConsent = ref(false)
+const extractedSubtitles = ref([])
+const extractingSubtitles = ref(false)
 let abortAnalysis = null
+let abortSubtitles = null
 let studyAttempt = null
 let bilibiliAttempt = null
 const resultRecord = computed(() => task.value?.result ?? video.value)
@@ -374,9 +388,10 @@ const previewVideo = computed(() => {
   if (taskId.value) return submittedTaskId.value === taskId.value ? videoInfo.value : null
   return parsedVideoUrl.value ? videoInfo.value : null
 })
-const canStartAnalysis = computed(() =>
+const canExtractSubtitles = computed(() =>
   previewVideo.value && !taskId.value && !videoId.value &&
-  previewVideo.value.has_captions !== false && !analysisResult.value && !progressSteps.length)
+  previewVideo.value.has_captions !== false && !analysisResult.value)
+const canStartAnalysis = computed(() => canExtractSubtitles.value && !progressSteps.length)
 const canDownload = computed(() => Boolean(parsedVideoUrl.value && previewVideo.value?.formats?.length))
 const questionLink = computed(() => {
   if (resultRecord.value?.id) return studyChatLink('video', resultRecord.value.id)
@@ -465,6 +480,13 @@ function saveAnalysisState() {
 
 watch([parsedVideoUrl, privateSource], ([url, privateVideo]) => {
   saveToLibrary.value = Boolean(url) && !privateVideo
+})
+
+watch([parsedVideoUrl, taskId, videoId], () => {
+  abortSubtitles?.abort()
+  abortSubtitles = null
+  extractingSubtitles.value = false
+  extractedSubtitles.value = []
 })
 
 watch([taskId, videoId], () => {
@@ -599,10 +621,36 @@ async function handleParse(url = urlInput.value.trim()) {
   }
 }
 
+async function handleExtractSubtitles() {
+  const url = parsedVideoUrl.value
+  if (!canExtractSubtitles.value || extractingSubtitles.value || analyzing.value) return
+  if (requireBilibiliSession(url, '连接会话并提取字幕', handleExtractSubtitles)) return
+
+  const controller = new AbortController()
+  abortSubtitles = controller
+  extractingSubtitles.value = true
+  analysisError.value = ''
+  sessionGuide.value = null
+  const credentials = credentialsFor(url)
+  try {
+    const result = await extractSubtitles(url, credentials, controller.signal)
+    if (!controller.signal.aborted) extractedSubtitles.value = result.subtitle_segments
+  } catch (error) {
+    if (controller.signal.aborted) return
+    analysisError.value = error.message || '字幕提取失败'
+    handleVideoError(error, url, handleExtractSubtitles, credentials)
+  } finally {
+    if (abortSubtitles === controller) {
+      abortSubtitles = null
+      extractingSubtitles.value = false
+    }
+  }
+}
+
 async function handleAnalyze() {
   if (!canArchive.value) return handleImmediateAnalyze()
   const url = parsedVideoUrl.value
-  if (!url || analyzing.value) return
+  if (!url || analyzing.value || extractingSubtitles.value) return
   if (requireBilibiliSession(url, '连接会话并分析', handleAnalyze)) return
   sessionGuide.value = null
   const credentials = credentialsFor(url)
@@ -703,7 +751,7 @@ async function cancelAnalysisTask() {
 
 function handleImmediateAnalyze() {
   const url = parsedVideoUrl.value
-  if (!url || analyzing.value) return
+  if (!url || analyzing.value || extractingSubtitles.value) return
   if (requireBilibiliSession(url, '连接会话并分析', handleImmediateAnalyze)) return
 
   analyzing.value = true
@@ -777,6 +825,7 @@ function dismissProgress() {
 onBeforeUnmount(() => {
   abortAnalysis?.abort()
   abortAnalysis = null
+  abortSubtitles?.abort()
 })
 </script>
 

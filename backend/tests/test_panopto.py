@@ -73,6 +73,22 @@ class PanoptoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(requests), 2)
         self.assertTrue(all(request.headers.get("Cookie") == ".ASPXAUTH=fixture-session" for request in requests))
 
+    async def test_subtitles_fall_back_when_preferred_track_only_contains_markup(self):
+        def respond(request):
+            language = request.url.params.get("language")
+            if language == "8":
+                return httpx.Response(200, json=[{"Time": 1.0, "Caption": "<b></b><br>&nbsp;"}])
+            if language == "0":
+                return httpx.Response(200, json=[{"Time": 1.0, "Caption": "Backup captions."}])
+            return httpx.Response(200, json={"Delivery": DELIVERY})
+
+        requests = self.mock_viewer(respond)
+        video = await open_video(COURSE)
+        subtitles = await video.subtitles()
+        self.assertIsNotNone(subtitles)
+        self.assertEqual(subtitles.plain_text, "Backup captions.")
+        self.assertEqual([request.url.params.get("language") for request in requests], [None, "8", "0"])
+
     async def test_sign_in_and_rejected_session_are_distinct(self):
         self.mock_viewer(lambda _: httpx.Response(200, json={"ErrorCode": 2, "LoginRedirect": True}))
         for session, expected in ((None, "panopto_login_required"), (SecretStr("expired"), "panopto_session_rejected")):

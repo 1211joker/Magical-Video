@@ -1,268 +1,137 @@
-"""
-字幕提取服务 — 从视频中提取字幕文本。
-
-YouTube → youtube-transcript-api（专门提取字幕，不受 yt-dlp PO Token 限制）
-B站     → yt-dlp 获取字幕文件 → 解析 VTT/JSON → 提取片段
-
-返回 SubtitleData：
-  - plain_text: 纯文本（给 AI 分析用）
-  - segments:   [{start_time, end_time, text}, ...]（给前端展示用）
-"""
+"""提取 YouTube、B站和 Panopto 的字幕，统一整理为带时间戳的片段。"""
 import asyncio
-import sys
-import os
-import tempfile
-import re
+import json
 import logging
-from dataclasses import dataclass, field
+import re
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs
 
 from pydantic import SecretStr
 
 from config import YTDLP_PROXY, YTDLP_TIMEOUT
-from services.panopto_service import PanoptoVideo, get_panopto_captions
-from services.video_platform import identify_platform
+from services.panopto_service import PanoptoVideo, iter_panopto_caption_tracks
+from services.subtitle_format import normalize_subtitle_segments
+from services.video_platform import identify_platform, split_video_url
 from services.video_session import BilibiliSessionError, check_bilibili_login
 from services.youtube_network import get_youtube_connection
 from services.ytdlp_service import run_ytdlp
 
 logger = logging.getLogger(__name__)
 
-
-# 字幕语言优先级
 LANG_PRIORITY_YT = ["zh-Hans", "zh", "zh-TW", "en", "en-US"]
-LANG_PRIORITY_BILI = [r"zh-Hans", r"zh-CN", r"zh-TW", r"zh", r"en", r"en-US", r"en-GB"]
+LANG_PRIORITY_BILI = ("zh-Hans", "zh-CN", "zh-TW", "zh", "ai-zh", "en", "en-US", "en-GB")
+
+_TIMESTAMP = r"(?:\d{2,}:)?[0-5]\d:[0-5]\d[.,]\d{3}"
+_CUE_TIMING = re.compile(rf"^({_TIMESTAMP})\s*-->\s*({_TIMESTAMP})(?=\s|$)")
+_VTT_METADATA = re.compile(r"^(?:NOTE|STYLE|REGION)(?:[ \t]|$)")
 
 
 @dataclass
 class SubtitleData:
-    """字幕提取结果：纯文本（AI用）+ 结构化片段（前端展示用）"""
     plain_text: str
-    segments: list = field(default_factory=list)
+    segments: list[dict]
 
 
-# ========== 工具函数 ==========
-
-def _timestamp_to_seconds(ts: str) -> float:
-    """将 VTT/SRT 时间戳 "HH:MM:SS.mmm" 或 "MM:SS.mmm" 转为浮点秒数"""
-    parts = ts.replace(',', '.').strip().split(':')
-    if len(parts) == 3:
-        return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-    elif len(parts) == 2:
-        return float(parts[0]) * 60 + float(parts[1])
-    return 0.0
+def _subtitle_data(segments: list[dict]) -> Optional[SubtitleData]:
+    segments = normalize_subtitle_segments(segments)
+    if not segments:
+        return None
+    return SubtitleData(" ".join(segment["text"] for segment in segments), segments)
 
 
-def _segments_to_plain_text(segments: list) -> str:
-    """将片段列表拼接为纯文本（空格分隔）"""
-    return " ".join(s.get("text", "") if isinstance(s, dict) else s.text for s in segments)
+def _timestamp_to_seconds(timestamp: str) -> float:
+    seconds = 0.0
+    for part in timestamp.replace(",", ".").split(":"):
+        seconds = seconds * 60 + float(part)
+    return seconds
 
 
-# ========== VTT / SRT 解析（保留时间戳） ==========
-
-def _parse_vtt_segments(raw_text: str) -> list:
-    """
-    将 VTT/SRT 字幕内容解析为带时间戳的片段列表。
-
-    返回: [{"start_time": 1.0, "end_time": 4.5, "text": "大家好"}, ...]
-    """
-    lines = raw_text.split("\n")
+def _parse_vtt_segments(raw_text: str) -> list[dict]:
+    """读取 VTT 或 SRT 的时间和文本，保留换行给后续整理。"""
     segments = []
-    in_header = True
-    current_start = None
-    current_end = None
-    current_texts = []
-
-    # 时间戳正则（VTT 用 . 分隔毫秒，SRT 用 , 分隔）
-    ts_pattern = re.compile(
-        r"^(\d{2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[.,]\d{3})"
-    )
-
-    for line in lines:
-        stripped = line.strip()
-
-        # 跳过 WEBVTT 头部
-        if in_header:
-            if stripped in ("WEBVTT", "") or stripped.startswith(("Kind:", "Language:", "::")):
-                if stripped == "":
-                    in_header = False
-                continue
-            in_header = False
-
-        # 空行 → 可能表示一个字幕块的结束
-        if not stripped:
-            if current_start is not None and current_texts:
-                text = " ".join(current_texts)
-                text = re.sub(r"<[^>]+>", "", text)  # 去 HTML 标签
-                text = re.sub(r"</?c[^>]*>", "", text)
-                if text.strip():
-                    segments.append({
-                        "start_time": current_start,
-                        "end_time": current_end,
-                        "text": text.strip()
-                    })
-                current_start = None
-                current_end = None
-                current_texts = []
+    timing = None
+    text = []
+    metadata = False
+    for raw_line in raw_text.lstrip("\ufeff").splitlines() + [""]:
+        line = raw_line.strip()
+        if not line:
+            metadata = False
+        elif not timing and _VTT_METADATA.match(line):
+            metadata = True
+        if metadata:
             continue
-
-        # 时间戳行
-        m = ts_pattern.match(stripped)
-        if m:
-            # 保存上一个片段
-            if current_start is not None and current_texts:
-                text = " ".join(current_texts)
-                text = re.sub(r"<[^>]+>", "", text)
-                text = re.sub(r"</?c[^>]*>", "", text)
-                if text.strip():
-                    segments.append({
-                        "start_time": current_start,
-                        "end_time": current_end,
-                        "text": text.strip()
-                    })
-
-            current_start = _timestamp_to_seconds(m.group(1))
-            current_end = _timestamp_to_seconds(m.group(2))
-            current_texts = []
-            continue
-
-        # 跳过纯数字序号行（SRT）
-        if stripped.isdigit():
-            continue
-
-        # 跳过 cue settings
-        if stripped.startswith(("align:", "position:", "size:")):
-            continue
-
-        # 文本行
-        if current_start is not None:
-            cleaned = re.sub(r"<[^>]+>", "", stripped)
-            cleaned = re.sub(r"</?c[^>]*>", "", cleaned)
-            if cleaned:
-                current_texts.append(cleaned)
-
-    # 处理最后一个片段
-    if current_start is not None and current_texts:
-        text = " ".join(current_texts)
-        text = re.sub(r"<[^>]+>", "", text)
-        text = re.sub(r"</?c[^>]*>", "", text)
-        if text.strip():
-            segments.append({
-                "start_time": current_start,
-                "end_time": current_end,
-                "text": text.strip()
-            })
-
-    return segments
-
-
-# ========== B站 JSON 字幕解析（保留时间戳） ==========
-
-def _parse_bilibili_json_segments(filepath: str) -> list:
-    """
-    解析 B站 原生 JSON 字幕文件，返回带时间戳的片段列表。
-
-    B站字幕格式: [{"from": 1.0, "to": 3.5, "content": "你好"}, ...]
-    """
-    import json as _json
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-    except Exception:
-        return []
-
-    # 支持多种 JSON 结构
-    if isinstance(data, list):
-        items = data
-    elif isinstance(data, dict):
-        body = data.get("body") or data.get("subtitles") or data.get("data") or []
-        items = body if isinstance(body, list) else []
-    else:
-        return []
-
-    segments = []
-    for item in items:
-        if isinstance(item, dict):
-            content = (item.get("content") or item.get("text") or "").strip()
-            if content:
+        next_timing = _CUE_TIMING.match(line)
+        if timing and (not line or next_timing):
+            if text:
                 segments.append({
-                    "start_time": float(item.get("from", 0)),
-                    "end_time": float(item.get("to", 0)),
-                    "text": content
+                    "start_time": _timestamp_to_seconds(timing[1]),
+                    "end_time": _timestamp_to_seconds(timing[2]),
+                    "text": "\n".join(text),
                 })
-
+            timing, text = None, []
+        if next_timing:
+            timing = next_timing
+        elif timing:
+            text.append(line)
     return segments
 
 
-# ========== yt-dlp 字幕下载（B站） ==========
+def _parse_bilibili_json_segments(path: Path) -> list[dict]:
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict):
+        data = data.get("body") or data.get("subtitles") or data.get("data")
+    if not isinstance(data, list):
+        return []
+    return [
+        {"start_time": row.get("from"), "end_time": row.get("to"), "text": row.get("content") or row.get("text")}
+        for row in data
+        if isinstance(row, dict)
+    ]
 
-async def _download_bilibili_subs(url: str, cookies_file: Optional[str], output_dir: str) -> Optional[str]:
-    """获取 B站字幕文件。取消任务时由共享运行器终止 yt-dlp。"""
-    cmd = [
+
+async def _download_bilibili_subs(url: str, cookies_file: Optional[Path], output_dir: Path) -> list[Path]:
+    command = [
         sys.executable, "-m", "yt_dlp",
         "--skip-download",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-format", "vtt/srt/ass/json",
-        "--sub-langs", "zh-Hans,zh-CN,zh-TW,zh,ai-zh,en",
+        "--sub-format", "vtt/srt/json",
+        "--sub-langs", ",".join(LANG_PRIORITY_BILI),
         "--no-playlist",
         "--no-check-certificates",
-        "-o", os.path.join(output_dir, "%(title)s.%(ext)s"),
+        "-o", str(output_dir / "subtitle.%(ext)s"),
     ]
     if cookies_file:
-        cmd.extend(["--cookies", cookies_file])
+        command.extend(["--cookies", str(cookies_file)])
     if YTDLP_PROXY:
-        cmd.extend(["--proxy", YTDLP_PROXY])
+        command.extend(["--proxy", YTDLP_PROXY])
 
-    logger.info(f"[B站字幕] 执行 yt-dlp 命令...")
-    returncode, _, stderr = await run_ytdlp(cmd, url, YTDLP_TIMEOUT + 30)
-
-    logger.info("[B站字幕] yt-dlp returncode=%s", returncode)
-    all_files = os.listdir(output_dir)
-
-    SUB_EXTENSIONS = ('.vtt', '.srt', '.ass', '.json')
-    sub_files = []
-    for fname in all_files:
-        if fname.endswith(SUB_EXTENSIONS):
-            sub_files.append(os.path.join(output_dir, fname))
-
-    if not sub_files:
+    _, _, stderr = await run_ytdlp(command, url, YTDLP_TIMEOUT + 30)
+    files = [path for path in output_dir.iterdir() if path.suffix in {".vtt", ".srt", ".json"}]
+    if not files:
         check_bilibili_login(stderr.decode("utf-8", errors="replace"), bool(cookies_file), checking_subtitles=True)
-        logger.warning(f"[B站字幕] 未找到任何字幕文件")
-        return None
 
-    logger.info(f"[B站字幕] 找到 {len(sub_files)} 个字幕文件")
+    priority = {language.lower(): index for index, language in enumerate(LANG_PRIORITY_BILI)}
+    return sorted(files, key=lambda path: (priority.get(path.stem.rsplit(".", 1)[-1].lower(), len(priority)), path.name))
 
-    # 按语言优先级排序（中文优先）
-    def lang_priority(fpath: str) -> int:
-        name = os.path.basename(fpath).lower()
-        for i, lp in enumerate(LANG_PRIORITY_BILI):
-            if re.search(lp, name, re.IGNORECASE):
-                return i
-        return 99
-
-    sub_files.sort(key=lang_priority)
-    return sub_files[0]
-
-
-# ========== 平台字幕提取 ==========
 
 def _extract_video_id(url: str) -> Optional[str]:
-    """从 YouTube URL 提取 video ID"""
-    patterns = [
-        r"youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})",
-        r"youtu\.be/([a-zA-Z0-9_-]{11})",
-        r"youtube\.com/embed/([a-zA-Z0-9_-]{11})",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
+    parsed = split_video_url(url)
+    path = parsed.path.strip("/").split("/")
+    if parsed.hostname in ("youtu.be", "www.youtu.be"):
+        video_id = path[0]
+    elif path[0] in ("embed", "shorts", "live") and len(path) > 1:
+        video_id = path[1]
+    else:
+        video_id = parse_qs(parsed.query).get("v", [""])[0]
+    return video_id if re.fullmatch(r"[a-zA-Z0-9_-]{11}", video_id) else None
 
 
 async def _extract_youtube_subs(url: str) -> Optional[SubtitleData]:
-    """用 youtube-transcript-api 提取 YouTube 字幕（保留时间戳）"""
     video_id = _extract_video_id(url)
     if not video_id:
         return None
@@ -282,121 +151,57 @@ async def _extract_youtube_subs(url: str) -> Optional[SubtitleData]:
                 return list(api.fetch(video_id, LANG_PRIORITY_YT))
 
         snippets = await asyncio.to_thread(fetch_transcript)
-        if not snippets:
-            return None
-
-        segments = []
-        for s in snippets:
-            text = s.text.strip()
-            if text:
-                segments.append({
-                    "start_time": s.start,
-                    "end_time": s.start + s.duration,
-                    "text": text
-                })
-
-        if not segments:
-            return None
-
-        plain = _segments_to_plain_text(segments)
-        return SubtitleData(plain_text=plain, segments=segments)
-
-    except Exception:
+        return _subtitle_data([
+            {"start_time": item.start, "end_time": item.start + item.duration, "text": item.text}
+            for item in snippets
+        ])
+    except Exception as error:
+        logger.info("YouTube 字幕提取未完成: %s", type(error).__name__)
         return None
 
 
 async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Optional[SubtitleData]:
-    """
-    用 yt-dlp 下载 B站 字幕文件，解析为带时间戳的片段。
+    with tempfile.TemporaryDirectory(prefix="bili_subs_") as directory:
+        output_dir = Path(directory)
+        cookies_file = None
+        if cookies:
+            cookies_file = output_dir / "session.txt"
+            cookies_file.write_text(cookies, encoding="utf-8")
 
-    返回 SubtitleData（plain_text + segments），失败时返回 None。
-    """
-    cookies_file = None
-    if cookies:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        )
-        tmp.write(cookies)
-        tmp.close()
-        cookies_file = tmp.name
+        try:
+            for path in await _download_bilibili_subs(url, cookies_file, output_dir):
+                try:
+                    if path.suffix == ".json":
+                        segments = _parse_bilibili_json_segments(path)
+                    else:
+                        segments = _parse_vtt_segments(path.read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError):
+                    continue
+                subtitles = _subtitle_data(segments)
+                if subtitles:
+                    return subtitles
+        except BilibiliSessionError:
+            raise
+        except Exception as error:
+            logger.warning("B站字幕提取未完成: %s", type(error).__name__)
+    return None
 
-    output_dir = tempfile.mkdtemp(prefix="bili_subs_")
-
-    try:
-        sub_path = await _download_bilibili_subs(url, cookies_file, output_dir)
-
-        if not sub_path:
-            return None
-
-        logger.info(f"[B站字幕] 选中文件: {sub_path}")
-
-        # 根据扩展名选择解析器
-        if sub_path.endswith('.json'):
-            segments = _parse_bilibili_json_segments(sub_path)
-        else:
-            with open(sub_path, "r", encoding="utf-8") as f:
-                raw_text = f.read()
-            segments = _parse_vtt_segments(raw_text)
-
-        if not segments:
-            logger.warning(f"[B站字幕] 解析出 0 个片段")
-            return None
-
-        plain = _segments_to_plain_text(segments)
-        if len(plain) < 10:
-            logger.warning(f"[B站字幕] 纯文本太短 ({len(plain)} 字)")
-            return None
-
-        logger.info(f"[B站字幕] 成功提取 {len(segments)} 片段，{len(plain)} 字")
-        return SubtitleData(plain_text=plain, segments=segments)
-
-    except BilibiliSessionError:
-        raise
-    except Exception as e:
-        logger.warning("[B站字幕] 提取过程异常: %s", type(e).__name__)
-        return None
-
-    finally:
-        if cookies_file and os.path.exists(cookies_file):
-            os.unlink(cookies_file)
-        import shutil
-        if os.path.exists(output_dir):
-            shutil.rmtree(output_dir, ignore_errors=True)
-
-
-# ========== 公共入口 ==========
 
 async def extract_panopto_subtitle_text(
     video: PanoptoVideo,
     session: Optional[SecretStr],
 ) -> Optional[SubtitleData]:
-    segments = await get_panopto_captions(video, session)
-    if not segments:
-        return None
-    return SubtitleData(plain_text=_segments_to_plain_text(segments), segments=segments)
+    async for segments in iter_panopto_caption_tracks(video, session):
+        subtitles = _subtitle_data(segments)
+        if subtitles:
+            return subtitles
+    return None
 
 
-async def extract_subtitle_text(
-    url: str,
-    cookies: Optional[str] = None,
-) -> Optional[SubtitleData]:
-    """
-    提取视频字幕，自动根据平台选择最佳方式。
-
-    - YouTube → youtube-transcript-api（专用字幕库）
-    - B站 → yt-dlp（下载 + 解析）
-
-    返回 SubtitleData：
-      - plain_text: 纯文本，空格分隔，给 AI 分析用
-      - segments: [{start_time, end_time, text}, ...]，给前端展示用
-
-    无字幕时返回 None。
-    """
+async def extract_subtitle_text(url: str, cookies: Optional[str] = None) -> Optional[SubtitleData]:
     platform = identify_platform(url)
     if platform == "youtube":
         return await _extract_youtube_subs(url)
-
     if platform == "bilibili":
         return await _extract_bilibili_subs(url, cookies)
-
     return None

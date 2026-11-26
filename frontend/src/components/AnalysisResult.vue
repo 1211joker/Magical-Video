@@ -109,11 +109,7 @@
 
         <!-- 字幕 -->
         <div v-else-if="activeTab === 'subtitles'" :key="'subtitles'" class="card tab-panel">
-          <h3 class="section-title">
-            <svg class="section-svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 12h10m-10 4h6"/></svg>
-            原始字幕
-          </h3>
-          <SubtitleViewer :segments="result.subtitle_segments || []" />
+          <SubtitleViewer :segments="result.subtitle_segments ?? []" :title="result.title" />
         </div>
       </Transition>
     </div>
@@ -129,7 +125,7 @@ defineProps({
   result: {
     type: Object,
     required: true
-  }
+  },
 })
 
 const activeTab = ref('overview')

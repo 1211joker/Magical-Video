@@ -1,5 +1,11 @@
 <template>
   <div class="subtitle-viewer">
+    <div class="subtitle-header">
+      <h3>字幕</h3>
+      <button v-if="segments?.length" class="btn-secondary subtitle-download" type="button" @click="downloadVtt">
+        下载字幕 (.vtt)
+      </button>
+    </div>
     <div v-if="!segments || segments.length === 0" class="subtitle-empty">
       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.4">
         <rect x="2" y="4" width="20" height="16" rx="2"/>
@@ -24,12 +30,50 @@
 </template>
 
 <script setup>
-defineProps({
+const props = defineProps({
   segments: {
     type: Array,
     default: () => []
-  }
+  },
+  title: {
+    type: String,
+    default: '',
+  },
 })
+
+function vttTime(milliseconds) {
+  const hours = Math.floor(milliseconds / 3600000)
+  const minutes = Math.floor(milliseconds / 60000) % 60
+  const seconds = Math.floor(milliseconds / 1000) % 60
+  const time = [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':')
+  return time + '.' + String(milliseconds % 1000).padStart(3, '0')
+}
+
+function downloadVtt() {
+  const cues = []
+  for (const segment of props.segments) {
+    if (!Number.isFinite(segment?.start_time) || !Number.isFinite(segment.end_time) || typeof segment.text !== 'string') continue
+    const text = segment.text.replace(/\s+/g, ' ').trim()
+    if (!text) continue
+    const start = Math.max(0, Math.round(segment.start_time * 1000))
+    const end = Math.max(start + 1, Math.round(segment.end_time * 1000))
+    cues.push({ start, end, text: text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;') })
+  }
+  if (!cues.length) return
+
+  cues.sort((left, right) => left.start - right.start)
+  const blocks = cues.map(cue => vttTime(cue.start) + ' --> ' + vttTime(cue.end) + '\n' + cue.text)
+  const blob = new Blob(['WEBVTT\n\n' + blocks.join('\n\n') + '\n'], { type: 'text/vtt;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const filename = props.title.replace(/[\\/:*?"<>|\x00-\x1f]/g, '-').slice(0, 120).trim()
+  link.href = url
+  link.download = (filename || 'transcript') + '.vtt'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
 
 function formatTime(seconds) {
   if (seconds == null || isNaN(seconds)) return '--:--'
@@ -45,7 +89,26 @@ function formatTime(seconds) {
 </script>
 
 <style scoped>
-.subtitle-viewer {
+.subtitle-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.subtitle-header h3 {
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.subtitle-download {
+  padding: 7px 11px;
+  font-size: 0.8rem;
+}
+
+.subtitle-list,
+.subtitle-empty {
   max-height: 500px;
   overflow-y: auto;
   border-radius: var(--radius-sm);
@@ -101,7 +164,9 @@ function formatTime(seconds) {
 .subtitle-text {
   color: var(--text-secondary);
   flex: 1;
+  min-width: 0;
   padding-top: 1px;
+  overflow-wrap: anywhere;
 }
 
 /* 响应式 */

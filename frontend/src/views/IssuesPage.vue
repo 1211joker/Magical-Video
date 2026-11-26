@@ -65,6 +65,17 @@
 <script setup>
 const solvedIssues = [
   {
+    id: 20,
+    title: '字幕整理、独立提取和 VTT 下载',
+    description: '后端会合并断句、清理滚动字幕里的重复行。首版整理可能误删真实台词、截短重叠条目或去掉韩语词间空格。',
+    solution: '仅对识别出的滚动更新去重，保留普通字幕的重复台词、重叠时长和韩语词间空格。无协议 YouTube 链接可提取字幕。浏览器断开时取消提取并清理 B 站临时会话。Panopto 首选字幕轨清理后为空时继续尝试备选轨。',
+    verification: '2026-11-26，6 个修复场景均通过回归测试。用无协议短链接在 Chrome 复测，65 条原始字幕整理为 22 条，全文一致。GPT-6.2 Sol 分析结果与独立提取的字幕一致。两个入口下载的 .vtt 逐字节相同，时间误差均小于 1 毫秒。',
+    video: {
+      title: 'Git Explained in 100 Seconds',
+      url: 'https://www.youtube.com/watch?v=hwP7WQkmECE',
+    },
+  },
+  {
     id: 19,
     title: 'AI 分析和问答可切换模型',
     description: '早期的字幕分析和问答固定使用 DeepSeek 官方服务。',

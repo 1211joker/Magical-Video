@@ -57,6 +57,11 @@ class SubtitleSegment(BaseModel):
     text: str               # 字幕文本
 
 
+class SubtitleResponse(BaseModel):
+    subtitle_segments: list[SubtitleSegment]
+    subtitle_text: str
+
+
 class OutlineItem(BaseModel):
     """大纲中的一个时间段主题"""
     time: str               # 时间段描述，如 "00:00-03:20"

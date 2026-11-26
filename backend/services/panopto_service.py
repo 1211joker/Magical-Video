@@ -2,8 +2,8 @@
 
 import math
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from html import unescape
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from uuid import UUID
@@ -182,7 +182,7 @@ async def get_panopto_video(url: str, session: Optional[SecretStr] = None) -> Pa
     )
 
 
-def _caption_segments(rows: list, video_duration: float) -> list:
+def _caption_segments(rows: list, video_duration: float) -> list[dict]:
     cues = []
     for row in rows:
         if not isinstance(row, dict):
@@ -191,8 +191,7 @@ def _caption_segments(rows: list, video_duration: float) -> list:
         caption = row.get("Caption")
         if start is None or not isinstance(caption, str):
             continue
-        caption = " ".join(unescape(re.sub(r"<[^>]+>", " ", caption)).split())
-        if caption:
+        if caption.strip():
             duration = _number(row.get("CaptionDuration")) or _number(row.get("Duration"))
             cues.append((start, duration, caption))
 
@@ -207,7 +206,9 @@ def _caption_segments(rows: list, video_duration: float) -> list:
     return segments
 
 
-async def get_panopto_captions(video: PanoptoVideo, session: Optional[SecretStr] = None) -> list:
+async def iter_panopto_caption_tracks(
+    video: PanoptoVideo, session: Optional[SecretStr] = None
+) -> AsyncIterator[list[dict]]:
     for language in video.caption_languages:
         params = {"getCaptions": "true"}
         if language is not None:
@@ -216,5 +217,4 @@ async def get_panopto_captions(video: PanoptoVideo, session: Optional[SecretStr]
         if isinstance(rows, list):
             segments = _caption_segments(rows, video.duration)
             if segments:
-                return segments
-    return []
+                yield segments

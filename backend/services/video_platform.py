@@ -1,6 +1,6 @@
 """视频平台识别。"""
 
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 
 PANOPTO_HOST = "polyu.ap.panopto.com"
@@ -10,10 +10,15 @@ PLATFORM_DOMAINS = {
 }
 
 
-def identify_platform(url: str) -> str:
+def split_video_url(url: str) -> SplitResult:
+    """将无协议链接同样解析为包含主机名的 URL。"""
     url = url.strip()
+    return urlsplit(url if "://" in url or url.startswith("//") else f"//{url}")
+
+
+def identify_platform(url: str) -> str:
     try:
-        hostname = urlsplit(url if "://" in url or url.startswith("//") else f"//{url}").hostname or ""
+        hostname = split_video_url(url).hostname or ""
     except ValueError:
         return "unsupported"
     if hostname.rstrip(".") == PANOPTO_HOST:

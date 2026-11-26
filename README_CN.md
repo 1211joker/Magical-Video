@@ -21,7 +21,7 @@ Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、
 主流程接收视频链接，输出四维度分析结果及交互式思维导图：
 
 1. **解析**：yt-dlp 获取视频元数据（标题、时长、封面）。
-2. **提取字幕**。YouTube 使用 `youtube-transcript-api`，Bilibili 使用 yt-dlp 读取 VTT 或 JSON，理大 Panopto 使用播放器提供的带时间戳字幕。
+2. **提取字幕**。YouTube 使用 `youtube-transcript-api`，Bilibili 使用 yt-dlp 获取 VTT、SRT 或 JSON 字幕，理大 Panopto 使用播放器提供的带时间戳字幕。后端统一整理异常断行、跨句片段和滚动重复行。
 3. **AI 分析**。字幕发送给所选模型，生成有原文依据的结构化结果。分析进度通过 SSE 实时推送到前端。
 4. **结果展示**：选项卡式界面呈现概述、大纲、要点、结论四个维度，并包含基于 markmap 的交互式思维导图。
 
@@ -79,12 +79,13 @@ Magical-Video/
 │   ├── models/schemas.py         # Pydantic 数据模型
 │   ├── limiter.py                   # 共享 slowapi Limiter 实例
 │   ├── routers/
-│   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
+│   │   ├── analyze.py            # 视频解析、字幕提取、流式分析和封面接口
 │   │   ├── download.py           # /api/download 和浏览器下载任务
 │   │   └── qa.py                 # /api/ask — AI 问答
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp 子进程封装
 │       ├── subtitle_service.py   # 字幕提取与解析
+│       ├── subtitle_format.py    # 跨平台字幕整理
 │       ├── analysis_service.py   # 字幕分析
 │       ├── qa_service.py         # 视频问答上下文
 │       └── ai_client.py         # 模型配置、HTTP 请求和重试
@@ -337,7 +338,14 @@ YTDLP_PROXY=http://127.0.0.1:7890
 4. B站或理大 Panopto 需要登录时，按「连接会话」面板的指引填写。
 5. 点击"解析视频"，等待视频信息（标题、时长、封面）加载。
 6. 选择 AI 模型并点击「开始分析」。后端提取字幕并交给所选模型，页面实时显示进度。
-7. 分析完成后，在四个选项卡中浏览结果：概述、大纲、要点、总结。"思维导图"选项卡提供交互式知识树。
+7. 分析完成后，可浏览概述、大纲、要点、总结和思维导图，并在「字幕」选项卡对照整理后的原文。
+
+### 提取并下载字幕
+
+1. 在「AI解析」页面解析视频后，点击「提取字幕」。这一步可以独立预览字幕，无需启动 AI 分析。
+2. 点击「下载字幕 (.vtt)」，浏览器会保存包含每条字幕起止时间的文件。完成 AI 分析后，也可以从结果的「字幕」选项卡下载。
+
+YouTube 支持省略 `https://` 的短链接，例如 `youtu.be/hwP7WQkmECE`。整理时保留普通字幕的重复台词、重叠时长和韩语词间空格。Panopto 首选轨清理后为空时会继续尝试备选轨。实测与回归记录见[字幕功能验收](docs/上线部署改进清单.md#2026-11-26-字幕功能验收)。
 
 ### AI 问答
 
