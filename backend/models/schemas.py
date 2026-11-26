@@ -45,6 +45,7 @@ class ParseResponse(BaseModel):
     formats: list[FormatInfo] = []  # 可选清晰度列表
     youtube_connection: Optional[Literal["direct", "proxy"]] = None
     has_captions: Optional[bool] = None
+    archive_supported: Optional[bool] = None
 
 
 # ========== AI 分析结果模型 ==========

@@ -68,7 +68,7 @@ const solvedIssues = [
     id: 19,
     title: 'AI 分析和问答可切换模型',
     description: '早期的字幕分析和问答固定使用 DeepSeek 官方服务。',
-    solution: '接入 OpenAI GPT 和 OpenCode Go 的 DeepSeek。分析页和问答页都可以选择已配置的模型，问答默认沿用生成摘要的模型。API Key 由后端读取。',
+    solution: '接入 OpenAI GPT 和 OpenCode Go 的 DeepSeek。分析页和问答页共用模型选择，课程 Wiki 沿用视频分析时所选的模型。API Key 由后端读取。',
   },
   {
     id: 15,

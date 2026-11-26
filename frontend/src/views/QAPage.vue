@@ -1,362 +1,443 @@
 <template>
   <div class="qa-page">
-    <header class="page-header">
-      <h1 class="page-title">AI 问答</h1>
-      <p class="page-desc">基于已分析的视频内容，向 AI 提问深度理解</p>
+    <header class="qa-toolbar card">
+      <div class="qa-heading">
+        <h1 class="page-title">AI 问答</h1>
+        <div v-if="context" class="qa-scope-title">
+          <p>{{ scopeLabel }}</p>
+          <h2 :title="context.title">{{ context.title }}</h2>
+        </div>
+      </div>
+      <div v-if="context || index.videos.length || index.courses.length" class="qa-toolbar-actions">
+        <AIProviderSelect v-model="provider" :disabled="busy || loading" />
+        <label v-if="index.videos.length || index.courses.length" class="qa-scope-select">
+          <span class="sr-only">切换问答范围</span>
+          <select :value="scopeSelection" :disabled="sending || loading" @change="changeScope($event.target.value)">
+            <option v-if="!context" value="" disabled>选择视频或课程</option>
+            <option v-if="context?.kind === 'temporary'" value="temporary">{{ context.title }}</option>
+            <option v-if="conversation?.archived" :value="scopeSelection" disabled>{{ context.title }}（已删除）</option>
+            <optgroup v-if="index.videos.length" label="单个视频">
+              <option v-for="video in index.videos" :key="video.id" :value="'video:' + video.id">{{ video.title }}</option>
+            </optgroup>
+            <optgroup v-if="index.courses.length" label="整门课程">
+              <option v-for="item in index.courses" :key="item.id" :value="'course:' + item.id">{{ item.title }}</option>
+            </optgroup>
+            <option value="library">全部资料</option>
+          </select>
+        </label>
+        <template v-if="context && context.kind !== 'temporary'">
+          <details ref="historyPanel" class="qa-history">
+            <summary class="btn-secondary btn-compact">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="8"/><path d="M12 8v4l2.5 2"/>
+              </svg>
+              历史对话
+            </summary>
+            <div class="qa-history-panel card">
+              <label class="study-check">
+                <input v-model="includeAll" type="checkbox" :disabled="conversation?.archived">显示所有范围的对话
+              </label>
+              <ul v-if="history.length">
+                <li v-for="item in history" :key="item.id">
+                  <RouterLink :to="conversationLink(item.id)" :aria-current="conversation?.id === item.id ? 'true' : undefined">
+                    {{ item.title }}
+                    <small v-if="includeAll || conversation?.archived">{{ item.scope_label }}</small>
+                  </RouterLink>
+                </li>
+              </ul>
+              <p v-else>当前范围暂无历史对话。</p>
+              <button v-if="conversation" class="quiet-action" :disabled="sending" @click="deleteConversation">删除当前对话</button>
+            </div>
+          </details>
+          <button v-if="canAsk" class="btn-secondary btn-compact" type="button"
+                  :disabled="sending || loading" @click="startNewConversation">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            新对话
+          </button>
+        </template>
+      </div>
     </header>
 
-    <!-- 思考火柴人动画 -->
-    <div v-if="analysisData" class="thinking-figure" aria-hidden="true">
-      <svg width="60" height="72" viewBox="0 0 60 72" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <!-- 身体 -->
-        <circle cx="30" cy="16" r="8" class="fig-head"/>
-        <line x1="30" y1="24" x2="30" y2="44" class="fig-body"/>
-        <!-- 手臂（思考姿态：一手托腮） -->
-        <line x1="30" y1="30" x2="14" y2="24" class="fig-arm-l"/>
-        <line x1="30" y1="30" x2="42" y2="18" class="fig-arm-r-thinking"/>
-        <!-- 腿 -->
-        <line x1="30" y1="44" x2="20" y2="66" class="fig-leg-l"/>
-        <line x1="30" y1="44" x2="40" y2="66" class="fig-leg-r"/>
-        <!-- 问号气泡 -->
-        <g class="question-bubble">
-          <circle cx="50" cy="10" r="8" fill="none"/>
-          <text x="50" y="14" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor" stroke="none">?</text>
-        </g>
-      </svg>
+    <p v-if="loading" class="empty-state card" role="status">正在读取问答资料…</p>
+    <div v-else-if="!context" class="empty-state card">
+      <div>
+        <h2 class="empty-title">{{ error ? '暂时无法打开问答' : '还没有分析数据' }}</h2>
+        <p class="empty-desc">{{ error || '分析一个视频后，就可以结合字幕和分析结果提问。' }}</p>
+      </div>
+      <RouterLink to="/analyze" class="btn-primary btn-compact">前往 AI解析</RouterLink>
     </div>
 
-    <!-- 空状态：无分析数据 -->
-    <div v-if="!analysisData" class="empty-state card">
-      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.25">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-      </svg>
-      <p class="empty-title">还没有分析数据</p>
-      <p class="empty-desc">请先在 AI解析 页面分析一个视频，然后再来提问。</p>
-      <router-link to="/analyze" class="btn-primary empty-cta">
-        前往 AI解析
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
-        </svg>
-      </router-link>
-    </div>
-
-    <!-- 主布局：左侧大纲 + 右侧对话 -->
     <div v-else class="qa-layout">
-      <!-- 左侧：内容大纲 -->
-      <aside class="outline-sidebar card">
-        <div class="outline-header">
-          <h2 class="outline-video-title">{{ analysisData.title || '视频分析' }}</h2>
-        </div>
-
-        <div class="outline-sections">
-          <!-- 概述 -->
-          <div class="outline-section" :class="{ open: openSections.overview }">
-            <button class="outline-toggle" @click="openSections.overview = !openSections.overview">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="toggle-arrow" :class="{ rotated: openSections.overview }">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
-              <span>概述</span>
-            </button>
-            <Transition name="collapse">
-              <p v-if="openSections.overview" class="outline-content">{{ analysisData.overview }}</p>
-            </Transition>
+      <button class="analysis-toggle btn-secondary btn-compact" type="button" aria-controls="qa-context-panel"
+              :aria-expanded="showAnalysis" @click="showAnalysis = !showAnalysis">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="5" width="18" height="14" rx="2"/><path d="M9 5v14"/>
+        </svg>
+        {{ showAnalysis ? '收起资料' : context.kind === 'course' ? '查看本讲分析' : context.kind === 'library' ? '查看资料范围' : '查看视频分析' }}
+      </button>
+      <aside id="qa-context-panel" class="outline-sidebar card" :class="{ expanded: showAnalysis }" aria-labelledby="qa-context-title">
+        <header class="outline-header">
+          <h2 id="qa-context-title">{{ context.kind === 'library' ? '资料范围' : '视频分析' }}</h2>
+          <div v-if="analysisLink || course" class="outline-links">
+            <RouterLink v-if="analysisLink" :to="analysisLink" class="qa-context-link">查看完整解析 <span aria-hidden="true">↗</span></RouterLink>
+            <RouterLink v-if="course" :to="{ name: 'study-course', params: { courseId: course.id }, query: { tab: 'wiki' } }"
+                        class="qa-context-link">课程 Wiki</RouterLink>
           </div>
-
-          <!-- 大纲 -->
-          <div class="outline-section" :class="{ open: openSections.outline }">
-            <button class="outline-toggle" @click="openSections.outline = !openSections.outline">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="toggle-arrow" :class="{ rotated: openSections.outline }">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
-              <span>大纲</span>
-              <span class="outline-count">{{ analysisData.outline?.length || 0 }} 段</span>
-            </button>
-            <Transition name="collapse">
-              <ul v-if="openSections.outline" class="outline-list">
-                <li v-for="(item, i) in analysisData.outline" :key="i" class="outline-item">
-                  <span v-if="item.time" class="outline-time">{{ item.time }}</span>
-                  <span class="outline-topic">{{ item.topic }}</span>
-                  <p v-if="item.detail" class="outline-detail">{{ item.detail }}</p>
-                </li>
-              </ul>
-            </Transition>
+        </header>
+        <div class="outline-scroll" tabindex="0" aria-label="分析内容">
+          <div v-if="course?.videos.length" class="lecture-picker">
+            <label for="qa-lecture">查看单讲分析</label>
+            <select id="qa-lecture" :value="lectureId" @change="loadLecture($event.target.value)">
+              <option v-for="(item, position) in course.videos" :key="item.id" :value="item.id">
+                第 {{ position + 1 }} 讲 · {{ item.title }}
+              </option>
+            </select>
           </div>
-
-          <!-- 关键要点 -->
-          <div class="outline-section" :class="{ open: openSections.keyPoints }">
-            <button class="outline-toggle" @click="openSections.keyPoints = !openSections.keyPoints">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="toggle-arrow" :class="{ rotated: openSections.keyPoints }">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
-              <span>关键要点</span>
-              <span class="outline-count">{{ analysisData.key_points?.length || 0 }} 条</span>
-            </button>
-            <Transition name="collapse">
-              <ul v-if="openSections.keyPoints" class="keypoints-list">
-                <li v-for="(item, i) in analysisData.key_points" :key="i" class="keypoint-item">
-                  <p class="keypoint-text">{{ item.point }}</p>
-                  <blockquote v-if="item.evidence" class="keypoint-evidence">{{ item.evidence }}</blockquote>
-                </li>
-              </ul>
-            </Transition>
-          </div>
-
-          <!-- 总结 -->
-          <div class="outline-section" :class="{ open: openSections.conclusions }">
-            <button class="outline-toggle" @click="openSections.conclusions = !openSections.conclusions">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="toggle-arrow" :class="{ rotated: openSections.conclusions }">
-                <polyline points="9 18 15 12 9 6"/>
-              </svg>
-              <span>总结</span>
-              <span class="outline-count">{{ analysisData.conclusions?.length || 0 }} 条</span>
-            </button>
-            <Transition name="collapse">
-              <ol v-if="openSections.conclusions" class="conclusions-list">
-                <li v-for="(item, i) in analysisData.conclusions" :key="i" class="conclusion-item">
-                  {{ typeof item === 'string' ? item : item.text }}
-                </li>
-              </ol>
-            </Transition>
-          </div>
+          <h3 v-if="analysisData" class="outline-video-title">{{ analysisData.title || context.title }}</h3>
+          <p v-if="lectureLoading" class="outline-note" role="status">正在读取本讲分析…</p>
+          <p v-else-if="lectureError" class="outline-note" role="alert">{{ lectureError }}</p>
+          <AnalysisOutline v-else-if="analysisData" :key="lectureId || analysisData.title" :analysis-data="analysisData" />
+          <p v-else-if="context.kind === 'library'" class="outline-note">可查阅 {{ index.videos.length }} 条已保存视频和 {{ index.courses.length }} 门课程。</p>
+          <p v-else-if="conversation?.archived" class="outline-note">原始资料已删除。可查看历史对话。</p>
+          <p v-else class="outline-note">加入课程视频后，可在这里查看每一讲的分析。</p>
         </div>
       </aside>
 
-      <!-- 右侧：对话区 -->
-      <div class="chat-area card">
-        <div class="chat-model">
-          <AIProviderSelect v-model="aiProvider" :disabled="loading" />
-        </div>
-        <!-- 消息列表 -->
-        <div class="chat-messages" ref="chatMessagesRef">
-          <!-- 初始提示 -->
-          <div class="chat-message assistant">
-            <div class="message-avatar">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
-              </svg>
+      <section class="chat-area card" aria-label="对话">
+        <div ref="chatMessagesRef" class="chat-messages" role="log" aria-label="问答消息" tabindex="0">
+          <div v-if="!entries.length" class="chat-message assistant">
+            <div class="message-avatar" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/></svg>
             </div>
             <div class="message-bubble">
-              <p>你好！我已阅读了视频的字幕内容和分析结果，有什么想问的吗？可以基于左侧的大纲找到你感兴趣的部分进行提问。</p>
+              <p v-if="conversation?.archived">该对话已归档。</p>
+              <p v-else-if="!canAsk">当前范围还没有已分析的视频。</p>
+              <p v-else-if="context.kind === 'course'">你可以结合这门课的字幕提问，或比较不同讲次。</p>
+              <p v-else-if="context.kind === 'library'">提问时可以加上视频名、讲次或想了解的概念。</p>
+              <p v-else>可以从分析要点问起，也可以直接输入你的问题。</p>
+              <div v-if="suggestions.length && canAsk" class="question-suggestions" aria-label="建议问题">
+                <button v-for="suggestion in suggestions" :key="suggestion.question" type="button"
+                        class="btn-secondary btn-compact" @click="fillQuestion(suggestion.question)">{{ suggestion.label }}</button>
+              </div>
             </div>
           </div>
 
-          <!-- 对话消息 -->
-          <div
-            v-for="(msg, i) in messages"
-            :key="i"
-            class="chat-message"
-            :class="msg.role"
-          >
-            <div class="message-avatar">
-              <template v-if="msg.role === 'user'">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
-                </svg>
-              </template>
-              <template v-else>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
-                </svg>
-              </template>
+          <template v-for="entry in entries" :key="entry.id">
+            <div :id="'study-turn-' + entry.id" class="chat-message user">
+              <div class="message-avatar" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M4 21v-3a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v3"/></svg>
             </div>
-            <div class="message-bubble">
-              <!-- 渲染回答中的 markdown 片段（blockquote + 段落） -->
-              <template v-for="(block, bi) in parseMessageBlocks(msg.content)" :key="bi">
-                <blockquote v-if="block.type === 'quote'" class="msg-quote">{{ block.text }}</blockquote>
-                <p v-else class="msg-paragraph">{{ block.text }}</p>
-              </template>
+              <p class="message-bubble">{{ entry.question }}</p>
             </div>
-          </div>
-
-          <!-- 打字动画 -->
-          <div v-if="loading" class="chat-message assistant">
-            <div class="message-avatar">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
-              </svg>
+            <div class="chat-message assistant" :data-answer-id="entry.id">
+              <div class="message-avatar" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/></svg>
             </div>
-            <div class="message-bubble typing-bubble">
-              <span class="typing-dot"></span>
-              <span class="typing-dot"></span>
-              <span class="typing-dot"></span>
+              <div v-if="entry.answer" class="message-bubble">
+                <template v-for="(block, position) in parseMessageBlocks(entry.answer)" :key="position">
+                  <blockquote v-if="block.type === 'quote'" class="msg-quote">{{ block.text }}</blockquote>
+                  <p v-else class="msg-paragraph">
+                    <template v-for="(part, partIndex) in answerTextParts(block.text)" :key="partIndex">
+                      <strong v-if="part.bold">{{ part.text }}</strong><template v-else>{{ part.text }}</template>
+                    </template>
+                  </p>
+                </template>
+                <p v-if="entry.invalidated" class="answer-note">来源已删除，此轮已退出回忆。</p>
+                <details v-if="entry.citations?.length" class="answer-sources">
+                  <summary>字幕出处 · {{ entry.citations.length }} 条</summary>
+                  <StudySources :sources="entry.citations" title="" />
+                </details>
+                <div v-if="entry.recalled?.length" class="recalled-answers">
+                  <h3>参考的旧问答</h3>
+                  <ul>
+                    <li v-for="memory in entry.recalled" :key="memory.id">
+                      <RouterLink :to="conversationLink(memory.conversation_id, memory.id)">{{ memory.question }}</RouterLink>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <div v-else-if="entry.pending || isTaskActive(entry.task)" class="message-bubble typing-bubble" role="status">
+                <span>{{ entry.task?.state === 'queued' ? '等待回答' : '正在回答' }}</span>
+                <span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span><span class="typing-dot" aria-hidden="true"></span>
+                <button v-if="entry.task" class="quiet-action" :disabled="sending" @click="updateTask(entry.task, 'cancel')">取消</button>
+              </div>
+              <div v-else class="message-bubble">
+                <p>{{ entry.task?.detail || entry.error || taskStates[entry.task?.state] }}</p>
+                <p v-if="taskError?.id === entry.id" class="answer-note" role="alert">{{ taskError.message }}</p>
+                <button v-if="canRetryTask(entry.task)" class="quiet-action" :disabled="busy || conversation?.archived"
+                        @click="updateTask(entry.task, 'retry')">重试回答</button>
+                <button v-else-if="entry.error" class="quiet-action" :disabled="busy" @click="answerTemporary(entry.question, entry.id)">重试回答</button>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
 
-        <!-- 错误提示 -->
-        <Transition name="fade">
-          <div v-if="errorMsg" class="qa-error" role="alert">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            <span>{{ errorMsg }}</span>
-            <button class="error-dismiss" aria-label="关闭错误" @click="errorMsg = ''">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <p v-if="sendError || error || taskError && active" class="qa-error" role="alert">{{ sendError || error || taskError.message }}</p>
+        <form v-if="canAsk" class="chat-form" @submit.prevent="handleSend">
+          <textarea ref="questionField" v-model="questionInput" class="chat-input" aria-label="输入问题"
+                    placeholder="输入你的问题…" rows="2" maxlength="2000" :disabled="busy" @keydown="handleKeydown" />
+          <div class="composer-actions">
+            <label v-if="context.kind !== 'temporary'" class="study-check recall-option">
+              <input v-model="recall" type="checkbox">参考旧问答
+            </label>
+            <button class="btn-primary btn-compact" type="submit" :disabled="!questionInput.trim() || busy" aria-label="发送问题">
+              <svg v-if="!busy" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+              </svg>
+              <svg v-else class="spinner-svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/>
+              </svg>
+              {{ busy ? '处理中…' : '发送' }}
             </button>
           </div>
-        </Transition>
-
-        <!-- 输入区 -->
-        <div class="chat-input-area">
-          <textarea
-            v-model="questionInput"
-            class="chat-input"
-            placeholder="输入你的问题..."
-            rows="2"
-            :disabled="loading"
-            @keydown="handleKeydown"
-          ></textarea>
-          <button
-            class="btn-send"
-            :disabled="!questionInput.trim() || loading"
-            @click="handleSend"
-            aria-label="发送问题"
-          >
-            <svg v-if="!loading" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-            <svg v-else class="spinner-svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/>
-            </svg>
-          </button>
-        </div>
-      </div>
+        </form>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { askQuestion } from '../api/index.js'
 import AIProviderSelect from '../components/AIProviderSelect.vue'
+import AnalysisOutline from '../components/AnalysisOutline.vue'
+import StudySources from '../components/StudySources.vue'
+import { useAIProvider } from '../composables/useAIProvider.js'
+import { useStudyQuestions } from '../composables/useStudyQuestions.js'
+import {
+  analysisTaskLink, canRetryTask, conversationLink, isTaskActive, studyChatLink, taskStates, videoAnalysisLink,
+} from '../studyUi.js'
 
-// 分析数据
-const analysisData = ref(null)
+const route = useRoute()
+const router = useRouter()
+const provider = useAIProvider()
+const {
+  index, context, conversation, history, includeAll, course, lectureId, analysis: analysisData,
+  lectureLoading, lectureError, loading, error, active, loadLecture, send, changeTask, removeConversation,
+} = useStudyQuestions()
 
-// 大纲折叠状态
-const openSections = reactive({
-  overview: true,
-  outline: true,
-  keyPoints: false,
-  conclusions: false,
-})
-
-// 对话状态
-const messages = ref([])
-const aiProvider = ref('')
-const aiSessionId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
-  byte.toString(16).padStart(2, '0')
-).join('')
+const showAnalysis = ref(false)
+const localTurns = ref([])
 const questionInput = ref('')
-const loading = ref(false)
-const errorMsg = ref('')
+const questionField = ref(null)
 const chatMessagesRef = ref(null)
+const historyPanel = ref(null)
+const recall = ref(true)
+const sending = ref(false)
+const sendError = ref('')
+const taskError = ref(null)
+let localTurnId = 0
+let temporarySessionId
 
-// 从 localStorage 加载分析数据
-onMounted(() => {
-  try {
-    const stored = localStorage.getItem('lastAnalysisResult')
-    if (stored) {
-      const data = JSON.parse(stored)
-      // 检查数据是否有效且不超过 24 小时
-      if (data.subtitle_text && data.title) {
-        analysisData.value = data
-        aiProvider.value = data.provider || ''
-      }
-    }
-  } catch (e) {
-    // 数据损坏，忽略
+const scopeLabel = computed(() => ({
+  video: '视频问答', temporary: '视频问答 · 临时分析', course: '课程问答', library: '全库问答',
+})[context.value?.kind])
+const scopeSelection = computed(() => {
+  const scope = context.value
+  return scope?.id ? scope.kind + ':' + scope.id : scope?.kind ?? ''
+})
+const analysisLink = computed(() => {
+  const id = lectureId.value || (context.value?.kind === 'video' ? context.value.id : null)
+  if (id && !conversation.value?.archived) return videoAnalysisLink(id)
+  if (context.value?.kind === 'temporary' && route.query.task) return analysisTaskLink(route.query.task)
+  return null
+})
+const canAsk = computed(() => {
+  if (!context.value || conversation.value?.archived) return false
+  if (context.value.kind === 'course') return Boolean(course.value?.videos.length)
+  if (context.value.kind === 'library') return Boolean(index.value.videos.length)
+  return Boolean(analysisData.value)
+})
+const busy = computed(() => sending.value || active.value)
+const entries = computed(() => {
+  if (context.value?.kind === 'temporary') return localTurns.value
+  return [
+    ...(conversation.value?.turns ?? []),
+    ...(conversation.value?.tasks ?? []).map(task => ({
+      id: task.id, question: task.question ?? task.label, created_at: task.created_at, task,
+    })),
+  ].sort((a, b) => a.created_at - b.created_at)
+})
+const suggestions = computed(() => {
+  if (context.value?.kind === 'course' && course.value?.videos.length > 1) {
+    const question = '第 1 讲和第 2 讲的主要内容有什么联系？'
+    return [{ label: question, question }]
   }
+  return (analysisData.value?.key_points ?? []).slice(0, 3).map(item => ({
+    label: item.point,
+    question: '能结合视频解释「' + item.point.slice(0, 160) + '」吗？',
+  }))
 })
 
-// Enter 发送，Shift+Enter 换行
-function handleKeydown(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault()
+watch(context, () => {
+  localTurns.value = []
+  temporarySessionId = undefined
+  questionInput.value = ''
+  sendError.value = ''
+  taskError.value = null
+  sending.value = false
+  showAnalysis.value = false
+  if (historyPanel.value) historyPanel.value.open = false
+}, { flush: 'sync' })
+
+const latestEntry = computed(() => entries.value.at(-1))
+watch(
+  [loading, () => latestEntry.value?.id, () => latestEntry.value?.task?.state, () => latestEntry.value?.answer],
+  async () => {
+    if (loading.value || route.query.turn) return
+    await nextTick()
+    const log = chatMessagesRef.value
+    if (!log) return
+    const answer = latestEntry.value?.answer && log.querySelector('[data-answer-id="' + latestEntry.value.id + '"]')
+    if (answer) {
+      log.scrollTop += answer.getBoundingClientRect().top - log.getBoundingClientRect().top - 12
+    } else {
+      log.scrollTop = log.scrollHeight
+    }
+  },
+)
+
+function changeScope(value) {
+  if (!value || value === 'temporary' || value === scopeSelection.value) return
+  const [scope, id] = value.split(':')
+  router.push(studyChatLink(scope, id))
+}
+
+function startNewConversation() {
+  const { kind, id } = context.value
+  const destination = studyChatLink(kind, id)
+  router.push({ ...destination, query: { ...destination.query, fresh: '1' } })
+}
+
+function fillQuestion(question) {
+  questionInput.value = question
+  questionField.value?.focus()
+}
+
+function handleKeydown(event) {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault()
     handleSend()
   }
 }
 
-// 发送问题
 async function handleSend() {
   const question = questionInput.value.trim()
-  if (!question || loading.value || !analysisData.value) return
-
-  // 只带已获得回答的问答，避免把失败的请求当成对话上下文。
-  const chatHistory = messages.value
-    .filter((message, index, history) =>
-      message.role === 'assistant' || history[index + 1]?.role === 'assistant'
-    )
-    .slice(-10)
-
-  // 添加用户消息
-  messages.value.push({ role: 'user', content: question })
-  questionInput.value = ''
-  errorMsg.value = ''
-  loading.value = true
-
-  // 滚动到底部
-  await nextTick()
-  scrollToBottom()
-
-  // 构建分析摘要 — 传递完整的四维度分析结果，给 AI 更丰富的上下文
-  let summary = ''
-  if (analysisData.value) {
-    const d = analysisData.value
-    const parts = []
-
-    if (d.overview) {
-      parts.push(`【概述】${d.overview}`)
-    }
-
-    if (d.outline?.length) {
-      const outlineText = d.outline
-        .map(o => `• ${o.time ? '[' + o.time + '] ' : ''}${o.topic}${o.detail ? '：' + o.detail : ''}`)
-        .join('\n')
-      parts.push(`【内容大纲】\n${outlineText}`)
-    }
-
-    if (d.key_points?.length) {
-      const kpText = d.key_points
-        .map((k, i) => `${i + 1}. ${k.point}${k.evidence ? '（原文：' + k.evidence + '）' : ''}`)
-        .join('\n')
-      parts.push(`【关键要点】\n${kpText}`)
-    }
-
-    if (d.conclusions?.length) {
-      const conclusions = d.conclusions
-        .map((c, i) => `${i + 1}. ${typeof c === 'string' ? c : c.text}`)
-        .filter(Boolean)
-        .join('\n')
-      if (conclusions) parts.push(`【总结】\n${conclusions}`)
-    }
-
-    summary = parts.join('\n\n')
+  if (!question || busy.value || !canAsk.value) return
+  if (context.value.kind === 'temporary') {
+    questionInput.value = ''
+    await answerTemporary(question)
+    return
   }
 
+  const selected = context.value
+  sending.value = true
+  sendError.value = ''
   try {
-    const result = await askQuestion(
-      question,
-      analysisData.value.subtitle_text,
-      summary,
-      chatHistory,
-      { provider: aiProvider.value, sessionId: aiSessionId },
-    )
-    messages.value.push({ role: 'assistant', content: result.answer })
+    if (route.query.turn) await router.replace(conversationLink(conversation.value.id))
+    await send(question, recall.value, provider.value)
+    if (context.value === selected) questionInput.value = ''
   } catch (err) {
-    errorMsg.value = err.message || '问答请求失败，请重试'
+    if (context.value === selected) sendError.value = err.message
   } finally {
-    loading.value = false
-    await nextTick()
-    scrollToBottom()
+    if (context.value === selected) sending.value = false
   }
 }
 
-function scrollToBottom() {
-  const el = chatMessagesRef.value
-  if (el) {
-    el.scrollTop = el.scrollHeight
+async function answerTemporary(question, retryId) {
+  if (busy.value || context.value?.kind !== 'temporary') return
+  const selected = context.value
+  const data = analysisData.value
+  const previous = localTurns.value.filter(turn => turn.answer).slice(-5).flatMap(turn => [
+    { role: 'user', content: turn.question }, { role: 'assistant', content: turn.answer },
+  ])
+  const id = retryId ?? 'temporary-' + ++localTurnId
+  if (!retryId) localTurns.value.push({ id, question, pending: true })
+  const entry = localTurns.value.find(turn => turn.id === id)
+  entry.pending = true
+  entry.error = ''
+  sending.value = true
+  try {
+    const subtitles = data.subtitle_text ?? data.subtitle_segments.map(segment => segment.text).join(' ')
+    temporarySessionId ??= crypto.randomUUID()
+    const result = await askQuestion(question, subtitles, analysisSummary(data), previous, {
+      provider: provider.value, sessionId: temporarySessionId,
+    })
+    entry.answer = result.answer
+  } catch (err) {
+    entry.error = err.message || '问答请求失败，请重试'
+  } finally {
+    entry.pending = false
+    if (context.value === selected) sending.value = false
   }
+}
+
+async function updateTask(task, action) {
+  const selected = context.value
+  sending.value = true
+  taskError.value = null
+  try {
+    await changeTask(task, action)
+  } catch (err) {
+    if (context.value === selected) taskError.value = { id: task.id, message: err.message }
+  } finally {
+    if (context.value === selected) sending.value = false
+  }
+}
+
+async function deleteConversation() {
+  const selected = context.value
+  sending.value = true
+  sendError.value = ''
+  try {
+    await removeConversation()
+  } catch (err) {
+    if (context.value === selected) sendError.value = err.message
+  } finally {
+    if (context.value === selected) sending.value = false
+  }
+}
+
+function analysisSummary(d) {
+  const parts = []
+
+  if (d.overview) {
+    parts.push(`【概述】${d.overview}`)
+  }
+
+  if (d.outline?.length) {
+    const outlineText = d.outline
+      .map(o => `• ${o.time ? '[' + o.time + '] ' : ''}${o.topic}${o.detail ? '：' + o.detail : ''}`)
+      .join('\n')
+    parts.push(`【内容大纲】\n${outlineText}`)
+  }
+
+  if (d.key_points?.length) {
+    const kpText = d.key_points
+      .map((k, i) => `${i + 1}. ${k.point}${k.evidence ? '（原文：' + k.evidence + '）' : ''}`)
+      .join('\n')
+    parts.push(`【关键要点】\n${kpText}`)
+  }
+
+  if (d.conclusions?.length) {
+    const conclusions = d.conclusions
+      .map((c, i) => `${i + 1}. ${typeof c === 'string' ? c : c.text}`)
+      .filter(Boolean)
+      .join('\n')
+    if (conclusions) parts.push(`【总结】\n${conclusions}`)
+  }
+  return parts.join('\n\n')
+}
+
+function answerTextParts(text) {
+  return text.split(/(\*\*[^*\n]+\*\*)/).map((part, index) =>
+    index % 2 ? { bold: true, text: part.slice(2, -2) } : { bold: false, text: part })
 }
 
 /**
@@ -409,556 +490,359 @@ function parseMessageBlocks(content) {
 
 <style scoped>
 .qa-page {
-  padding-top: 32px;
+  --qa-gap: clamp(10px, 1.2vw, 16px);
+  --qa-padding: clamp(12px, 1.5vw, 20px);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--qa-gap);
+  min-width: 0;
+  min-height: 0;
+  padding-top: var(--qa-gap);
 }
 
-.page-header {
-  text-align: center;
-  margin-bottom: 20px;
+.qa-toolbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 18px;
+  padding: 10px var(--qa-padding);
+}
+
+.qa-heading {
+  display: flex;
+  align-items: center;
+  gap: clamp(10px, 1.6vw, 22px);
+  min-width: 0;
 }
 
 .page-title {
-  font-family: var(--font-display);
-  font-size: 1.8rem;
-  font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: -0.02em;
-  margin-bottom: 6px;
+  font-family: var(--font-display);
+  font-size: clamp(1.2rem, 2vw, 1.55rem);
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
-.page-desc {
-  color: var(--text-muted);
-  font-size: 0.95rem;
+.qa-scope-title {
+  min-width: 0;
+  padding-inline-start: clamp(10px, 1.6vw, 20px);
+  border-inline-start: 1px solid var(--border);
 }
 
-/* ===== 思考火柴人 ===== */
-.thinking-figure {
+.qa-scope-title p,
+.lecture-picker label {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.qa-scope-title h2 {
+  overflow: hidden;
+  font-size: 0.94rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qa-toolbar-actions {
   display: flex;
-  justify-content: center;
-  margin-bottom: 8px;
-  color: var(--text-muted);
-  opacity: 0.4;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
-.fig-head {
-  animation: headBob 2s ease-in-out infinite;
+.qa-toolbar-actions .btn-compact { white-space: nowrap; }
+.qa-toolbar-actions svg, .analysis-toggle svg { flex: none; }
+.qa-scope-select { width: clamp(9rem, 20vw, 18rem); min-width: 0; }
+.qa-scope-select select, .lecture-picker select {
+  display: block;
+  min-height: 40px;
+  padding: 7px 10px;
+  font-size: 0.86rem;
+  text-overflow: ellipsis;
 }
 
-.fig-arm-r-thinking {
-  animation: armThink 2.5s ease-in-out infinite;
-  transform-origin: 30px 30px;
+.qa-history { position: relative; flex: none; }
+.qa-history > summary { cursor: pointer; list-style: none; }
+.qa-history > summary::-webkit-details-marker { display: none; }
+
+.qa-history-panel {
+  position: absolute;
+  inset-block-start: calc(100% + 7px);
+  inset-inline-end: 0;
+  display: grid;
+  gap: 8px;
+  width: min(22rem, calc(100vw - 2 * var(--app-gutter) - 24px));
+  padding: 12px;
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-md);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
 }
 
-.question-bubble {
-  animation: bubbleFloat 2s ease-in-out infinite;
-  transform-origin: 50px 10px;
+.qa-history-panel ul {
+  max-height: min(18rem, 40dvh);
+  overflow-y: auto;
+  list-style: none;
 }
 
-@keyframes headBob {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-2px); }
+.qa-history-panel a {
+  display: block;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  text-decoration: none;
+  overflow-wrap: anywhere;
 }
 
-@keyframes armThink {
-  0%, 100% { transform: rotate(0deg); }
-  30% { transform: rotate(-8deg); }
-  60% { transform: rotate(3deg); }
-}
+.qa-history-panel a:hover, .qa-history-panel a[aria-current] { background: var(--bg-hover); }
+.qa-history-panel small { display: block; color: var(--text-secondary); }
+.qa-history-panel > .quiet-action { justify-self: start; }
 
-@keyframes bubbleFloat {
-  0%, 100% { transform: translateY(0); opacity: 0.6; }
-  50% { transform: translateY(-4px); opacity: 1; }
-}
-
-/* ===== 空状态 ===== */
 .empty-state {
   display: flex;
-  flex-direction: column;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 60px 24px;
-  text-align: center;
-  max-width: 420px;
-  margin: 20px auto 0;
+  padding: var(--qa-padding);
+  color: var(--text-secondary);
 }
+.empty-title { color: var(--text-primary); font-size: 1.08rem; }
+.empty-desc { margin-top: 5px; font-size: 0.88rem; }
 
-.empty-title {
-  font-family: var(--font-display);
-  font-size: 1.2rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.empty-desc {
-  color: var(--text-muted);
-  font-size: 0.9rem;
-  margin-bottom: 12px;
-}
-
-.empty-cta {
-  text-decoration: none;
-  padding: 12px 28px;
-}
-
-/* ===== 双栏布局 ===== */
 .qa-layout {
   display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 16px;
-  align-items: start;
-  margin-top: 4px;
+  flex: 1;
+  grid-template-columns: clamp(236px, 30%, 480px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--qa-gap);
+  min-height: 0;
 }
 
-/* ===== 左侧大纲 ===== */
-.outline-sidebar {
-  max-height: calc(100dvh - 200px);
-  overflow-y: auto;
-  padding: 18px;
-  position: sticky;
-  top: 72px;
+.outline-sidebar, .chat-area {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
 }
 
 .outline-header {
-  margin-bottom: 14px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.outline-video-title {
-  font-family: var(--font-display);
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.outline-sections {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.outline-section {
-  border-radius: var(--radius-sm);
-}
-
-.outline-toggle {
-  display: flex;
+  flex: none;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 8px;
-  background: none;
-  border: none;
-  color: var(--text-secondary);
-  font-weight: 700;
-  font-size: 0.85rem;
-  text-align: left;
-  border-radius: var(--radius-sm);
-  transition: all var(--duration-fast);
-}
-
-.outline-toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.outline-section.open .outline-toggle {
-  color: var(--text-primary);
-}
-
-.toggle-arrow {
-  flex-shrink: 0;
-  transition: transform var(--duration-fast) var(--ease-out);
-  color: var(--text-muted);
-}
-
-.toggle-arrow.rotated {
-  transform: rotate(90deg);
-}
-
-.outline-count {
-  margin-left: auto;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--text-muted);
-}
-
-.outline-content {
-  padding: 4px 10px 10px 28px;
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-
-.outline-list {
-  list-style: none;
-  padding: 2px 6px 8px 28px;
-}
-
-.outline-item {
-  padding: 6px 4px;
-  border-left: 2px solid var(--border);
-  margin-bottom: 2px;
-}
-
-.outline-item:last-child {
-  border-left-color: transparent;
-}
-
-.outline-time {
-  display: inline-block;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: var(--bg-hover);
-  padding: 1px 6px;
-  border-radius: 3px;
-  margin-bottom: 2px;
-}
-
-.outline-topic {
-  display: block;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-top: 2px;
-}
-
-.outline-detail {
-  font-size: 0.78rem;
-  color: var(--text-secondary);
-  margin-top: 2px;
-  line-height: 1.5;
-}
-
-.keypoints-list {
-  list-style: none;
-  padding: 2px 6px 8px 28px;
-}
-
-.keypoint-item {
-  padding: 6px 4px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  min-height: 44px;
+  padding: 8px var(--qa-padding);
   border-bottom: 1px solid var(--border);
 }
-
-.keypoint-item:last-child {
-  border-bottom: none;
-}
-
-.keypoint-text {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.5;
-}
-
-.keypoint-evidence {
-  font-size: 0.76rem;
-  color: var(--text-muted);
-  border-left: 2px solid var(--border-strong);
-  padding: 2px 8px;
-  margin-top: 4px;
-  line-height: 1.5;
-  font-style: italic;
-}
-
-.conclusions-list {
-  padding: 4px 8px 10px 36px;
-}
-
-.conclusion-item {
-  font-size: 0.82rem;
+.outline-header h2 { font-size: 0.93rem; }
+.outline-links { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.qa-context-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
   color: var(--text-secondary);
-  line-height: 1.6;
-  padding: 2px 0;
+  font-size: 0.81rem;
+  font-weight: 600;
+  text-underline-offset: 3px;
 }
+.qa-context-link:hover { color: var(--text-primary); }
 
-/* collapse transition */
-.collapse-enter-active,
-.collapse-leave-active {
-  transition: all var(--duration-normal) var(--ease-out);
-  overflow: hidden;
+.outline-scroll, .chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
-.collapse-enter-from,
-.collapse-leave-to {
-  opacity: 0;
-  max-height: 0;
-}
-.collapse-enter-to,
-.collapse-leave-from {
-  opacity: 1;
-  max-height: 600px;
-}
+.outline-scroll:focus-visible, .chat-messages:focus-visible { outline-offset: -2px; }
+.outline-scroll { padding: 12px var(--qa-padding); overflow-wrap: anywhere; }
 
-/* ===== 右侧对话区 ===== */
-.chat-area {
-  display: flex;
-  flex-direction: column;
-  height: calc(100dvh - 200px);
-  min-height: 400px;
-  padding: 0;
-  overflow: hidden;
+.lecture-picker { display: grid; gap: 4px; margin-bottom: 12px; }
+.outline-video-title {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  line-height: 1.45;
 }
-
-.chat-model {
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
-}
+.outline-note { color: var(--text-secondary); font-size: 0.86rem; }
+.analysis-toggle { display: none; }
 
 .chat-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 20px 20px 8px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+  padding: var(--qa-padding);
 }
 
 .chat-message {
   display: flex;
-  gap: 10px;
-  max-width: 90%;
+  flex: none;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
 }
-
-.chat-message.user {
-  align-self: flex-end;
-  flex-direction: row-reverse;
-}
-
-.chat-message.assistant {
-  align-self: flex-start;
-}
+.chat-message.user { align-self: flex-end; flex-direction: row-reverse; max-width: min(78%, 65rem); }
+.chat-message.assistant { align-self: stretch; }
 
 .message-avatar {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--bg-hover);
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  width: 30px;
+  height: 30px;
   border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--text-secondary);
 }
-
-.chat-message.user .message-avatar {
-  background: var(--accent);
-  color: var(--bg-primary);
-  border-color: var(--accent);
-}
+.chat-message.user .message-avatar { background: var(--accent); border-color: var(--accent); color: var(--bg-primary); }
 
 .message-bubble {
-  padding: 12px 16px;
+  min-width: 0;
+  padding: 10px 14px;
   border-radius: var(--radius-md);
+  font-size: 0.92rem;
   line-height: 1.6;
-  font-size: 0.88rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
-
 .chat-message.assistant .message-bubble {
+  flex: 1;
+  border-top-left-radius: 4px;
   background: var(--bg-hover);
   color: var(--text-primary);
-  border-top-left-radius: 4px;
 }
-
 .chat-message.user .message-bubble {
+  border-top-right-radius: 4px;
   background: var(--accent);
   color: var(--bg-primary);
-  border-top-right-radius: 4px;
 }
-
-.msg-paragraph {
-  margin: 0;
-  line-height: 1.7;
-}
-
-.msg-paragraph + .msg-paragraph {
-  margin-top: 8px;
-}
+.msg-paragraph + .msg-paragraph { margin-top: 8px; }
 
 .msg-quote {
   margin: 6px 0;
-  padding: 4px 10px;
-  border-left: 2px solid var(--border-strong);
+  padding: 3px 10px;
+  border-inline-start: 2px solid var(--border-strong);
   color: var(--text-secondary);
-  font-style: italic;
-  font-size: 0.84rem;
-  line-height: 1.6;
+  font-size: 0.86rem;
 }
 
-.chat-message.user .msg-quote {
-  border-left-color: rgba(255,255,255,0.3);
-  color: rgba(255,255,255,0.8);
+.question-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.question-suggestions button { min-width: 0; max-width: 100%; text-align: left; overflow-wrap: anywhere; }
+.answer-note { padding-top: 6px; color: var(--text-secondary); font-size: 0.82rem; }
+.answer-sources, .recalled-answers { margin-top: 8px; }
+.answer-sources > summary { cursor: pointer; color: var(--text-secondary); font-weight: 700; font-size: 0.84rem; }
+.answer-sources[open] > summary { margin-bottom: 6px; }
+.answer-sources :deep(.study-evidence) {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr));
 }
+.recalled-answers h3 { margin-bottom: 3px; font-size: 0.84rem; }
+.recalled-answers ul { padding-inline-start: 1.2em; }
+.recalled-answers a, .quiet-action { color: var(--text-primary); }
+.quiet-action { background: transparent; font-size: 0.85rem; text-decoration: underline; text-underline-offset: 3px; }
 
-/* 打字动画 */
-.typing-bubble {
+.chat-message.assistant .typing-bubble {
   display: flex;
+  flex: 0 1 auto;
   align-items: center;
-  gap: 4px;
-  padding: 14px 18px;
-  min-width: 48px;
+  flex-wrap: wrap;
+  gap: 5px;
 }
-
 .typing-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--text-muted);
-  animation: typingBounce 1.2s ease-in-out infinite;
+  background: var(--text-secondary);
+  animation: typing-bounce 1.2s ease-in-out infinite;
 }
+.typing-dot:nth-of-type(3) { animation-delay: 0.15s; }
+.typing-dot:nth-of-type(4) { animation-delay: 0.3s; }
 
-.typing-dot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.typing-dot:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes typingBounce {
+@keyframes typing-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-6px); opacity: 1; }
+  30% { transform: translateY(-4px); opacity: 1; }
 }
 
-/* 错误 */
 .qa-error {
-  margin: 8px 20px;
-  padding: 10px 14px;
-  background: var(--danger-light);
+  flex: none;
+  margin: 6px var(--qa-padding);
+  padding: 8px 12px;
   border: 1px solid var(--danger-border);
   border-radius: var(--radius-sm);
+  background: var(--danger-light);
+  color: var(--text-primary);
   font-size: 0.82rem;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
-.error-dismiss {
-  margin-left: auto;
-  background: none;
-  color: var(--text-muted);
-  padding: 2px;
-  border-radius: 4px;
+.chat-form {
   display: flex;
-}
-
-.error-dismiss:hover {
-  color: var(--text-primary);
-}
-
-/* 输入区 */
-.chat-input-area {
-  display: flex;
-  align-items: flex-end;
+  flex: none;
   gap: 10px;
-  padding: 14px 20px;
+  padding: 10px var(--qa-padding);
   border-top: 1px solid var(--border);
-  background: var(--bg-card);
 }
 
 .chat-input {
   flex: 1;
-  font-size: 0.9rem;
-  padding: 10px 14px;
-  min-height: 44px;
-  max-height: 120px;
-  resize: none;
-  border-radius: var(--radius-sm);
+  min-width: 0;
+  min-height: 50px;
+  padding: 8px 12px;
+  font-size: 0.95rem;
   line-height: 1.5;
+  resize: none;
 }
 
-.btn-send {
+.composer-actions {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--bg-primary);
-  flex-shrink: 0;
-  box-shadow: 0 2px 8px var(--accent-glow);
-  transition: all var(--duration-fast) var(--ease-out);
+  flex: none;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 98px;
 }
+.composer-actions .btn-compact { white-space: nowrap; }
+.recall-option { justify-content: center; color: var(--text-secondary); font-size: 0.75rem; white-space: nowrap; }
 
-.btn-send:hover:not(:disabled) {
-  background: var(--accent-hover);
-  box-shadow: 0 4px 14px var(--accent-glow);
-  transform: translateY(-1px);
-}
+.spinner-svg { animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
-.btn-send:active:not(:disabled) {
-  transform: translateY(0) scale(0.96);
-}
-
-.btn-send:disabled {
-  opacity: 0.3;
-  box-shadow: none;
-}
-
-.spinner-svg {
-  animation: spin 0.6s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* ===== 响应式 ===== */
 @media (max-width: 767px) {
-  .qa-page {
-    padding-top: 24px;
-  }
+  .qa-toolbar { flex-direction: column; align-items: stretch; }
+  .qa-toolbar-actions { flex-wrap: wrap; }
+  .qa-toolbar-actions .btn-compact { padding-inline: 10px; }
+  .qa-scope-select { flex: 1 1 7rem; width: auto; }
+  .qa-history { position: static; }
+  .qa-history-panel { margin-inline-end: 10px; }
 
-  .page-title {
-    font-size: 1.4rem;
-  }
-
-  .page-desc {
-    font-size: 0.88rem;
-  }
-
-  .qa-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .outline-sidebar {
-    position: static;
-    max-height: none;
-  }
-
-  .chat-area {
-    height: calc(100dvh - 360px);
-    min-height: 320px;
-  }
-
-  .chat-message {
-    max-width: 95%;
-  }
+  .qa-layout { display: flex; flex-direction: column; }
+  .analysis-toggle { display: inline-flex; align-self: flex-start; flex: none; }
+  .outline-sidebar { display: none; }
+  .outline-sidebar.expanded { display: flex; max-height: min(31dvh, 17rem); }
+  .chat-area { flex: 1; }
+  .chat-message.user { max-width: 94%; }
+  .chat-input { font-size: 1rem; }
 }
 
 @media (max-width: 374px) {
-  .chat-messages {
-    padding: 14px 12px 6px;
-    gap: 10px;
-  }
-
-  .chat-input-area {
-    padding: 10px 12px;
-    gap: 8px;
-  }
-
-  .message-bubble {
-    padding: 10px 12px;
-    font-size: 0.82rem;
-  }
+  .qa-toolbar-actions { gap: 6px; }
+  .qa-toolbar-actions .btn-compact { padding-inline: 8px; }
+  .message-bubble { padding: 9px 10px; }
+  .chat-form { gap: 8px; }
+  .composer-actions { min-width: 82px; }
 }
 </style>

@@ -3,23 +3,29 @@
     <!-- 选项卡导航 -->
     <div class="tab-bar" role="tablist" aria-label="分析结果选项卡">
       <button
-        v-for="tab in tabs"
+        v-for="(tab, index) in tabs"
         :key="tab.key"
+        :id="tabGroupId + '-' + tab.key"
+        type="button"
         class="tab-btn"
         :class="{ active: activeTab === tab.key }"
         role="tab"
+        :aria-controls="tabGroupId + '-panel'"
         :aria-selected="activeTab === tab.key"
-        :aria-label="tab.label"
+        :tabindex="activeTab === tab.key ? 0 : -1"
         @click="activeTab = tab.key"
+        @keydown.left.prevent="moveTab(index, -1)"
+        @keydown.right.prevent="moveTab(index, 1)"
       >
         <!-- SVG icon injected via v-html since they're static inline SVGs -->
-        <span class="tab-icon" v-html="tab.icon"></span>
+        <span class="tab-icon" aria-hidden="true" v-html="tab.icon"></span>
         <span class="tab-label">{{ tab.label }}</span>
       </button>
     </div>
 
     <!-- 选项卡内容 -->
-    <div class="tab-content">
+    <div :id="tabGroupId + '-panel'" class="tab-content" role="tabpanel"
+         :aria-labelledby="tabGroupId + '-' + activeTab" tabindex="0">
       <Transition name="tab" mode="out-in">
         <!-- 概述 -->
         <div v-if="activeTab === 'overview'" :key="'overview'" class="card tab-panel">
@@ -115,7 +121,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, useId } from 'vue'
 import MindMap from './MindMap.vue'
 import SubtitleViewer from './SubtitleViewer.vue'
 
@@ -127,6 +133,7 @@ defineProps({
 })
 
 const activeTab = ref('overview')
+const tabGroupId = useId()
 
 const tabs = [
   { key: 'overview', label: '概述', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' },
@@ -136,59 +143,64 @@ const tabs = [
   { key: 'mindmap', label: '思维导图', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v2m0 16v2m-8-10h2m16 0h2m-3.64-7.64l1.42-1.42M4.22 19.78l1.42-1.42m0-12.72l-1.42-1.42m15.56 15.56l-1.42-1.42"/></svg>' },
   { key: 'subtitles', label: '字幕', icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 12h10m-10 4h6"/></svg>' },
 ]
+
+function moveTab(index, direction) {
+  const tab = tabs[(index + direction + tabs.length) % tabs.length]
+  activeTab.value = tab.key
+  document.getElementById(tabGroupId + '-' + tab.key)?.focus()
+}
 </script>
 
 <style scoped>
 .analysis-container {
-  margin-top: 20px;
+  min-width: 0;
 }
 
 /* ===== 选项卡导航 ===== */
 .tab-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 4px;
-  margin-bottom: 0;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
 }
-.tab-bar::-webkit-scrollbar { display: none; }
 
 .tab-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 10px 16px;
+  padding: 8px;
   font-size: 0.85rem;
   font-weight: 600;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
-  transition: all var(--duration-fast) var(--ease-out);
-  min-height: 40px;
+  transition: color var(--duration-fast), background-color var(--duration-fast);
+  min-height: 44px;
 }
 
-.tab-btn:hover {
-  color: var(--text-secondary);
+.tab-btn:hover:not(.active) {
+  color: var(--text-primary);
   background: var(--bg-hover);
 }
 
 .tab-btn.active {
-  color: var(--accent);
-  background: var(--bg-card);
-  border-color: var(--border);
-  border-bottom-color: var(--bg-card);
-  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
+  color: var(--bg-primary);
+  background: var(--accent);
+  box-shadow: var(--shadow-sm);
 }
 
 .tab-icon {
   display: inline-flex;
   align-items: center;
-  color: inherit;
+  flex: none;
 }
 
 .tab-label {
@@ -199,7 +211,7 @@ const tabs = [
 .tab-content {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 0 var(--radius-md) var(--radius-md) var(--radius-md);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
 }
 
@@ -266,7 +278,7 @@ const tabs = [
   padding: 3px 10px;
   border-radius: 4px;
   background: var(--accent);
-  color: #fff;
+  color: var(--bg-primary);
   font-size: 0.75rem;
   font-weight: 600;
   font-family: var(--font-mono);
@@ -321,7 +333,7 @@ const tabs = [
   height: 26px;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--bg-primary);
   font-size: 0.78rem;
   font-weight: 700;
   display: flex;
@@ -385,7 +397,7 @@ const tabs = [
   height: 26px;
   border-radius: 50%;
   background: var(--success);
-  color: #fff;
+  color: var(--bg-primary);
   font-size: 0.78rem;
   font-weight: 700;
   display: flex;
@@ -415,8 +427,9 @@ const tabs = [
 
 /* ===== 响应式 ===== */
 @media (max-width: 639px) {
+  .tab-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .tab-btn {
-    padding: 8px 12px;
+    padding: 8px 4px;
     font-size: 0.8rem;
   }
   .tab-label {

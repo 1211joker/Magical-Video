@@ -11,16 +11,24 @@ backend/__pycache__/
 backend/*.pyc
 backend/.env
 backend/downloads/
+/backend/.study-data/
 
 # IDE
 .vscode/
 .idea/
 
-# 文档（仅本地保留，不提交到 GitHub）
+# 本地说明与笔记
 README.md
 CLAUDE.md
 frontend/README.md
+
+# 按文件名收录项目开发与部署文档
 docs/
+!/docs/
+/docs/*
+!/docs/上线部署改进清单.md
+!/docs/长期记忆与课程Wiki-本地开发计划.md
+!/docs/长期记忆与课程Wiki-服务器部署计划.md
 视频下载器prd/
 .claude/
 

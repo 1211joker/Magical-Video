@@ -39,6 +39,8 @@ After the AI analysis, you can ask questions about the video content and get ans
 
 The Q&A system prompt instructs the model to base answers strictly on subtitle content, quote original text with「」marks, and honestly state when information is not covered in the video.
 
+On localhost, save analyses to the library to group videos, build course Wikis, and resume conversations across videos. Saved analyses use background tasks and can be reopened from recent analyses. [Local library guide](docs/长期记忆与课程Wiki-本地开发计划.md)
+
 ---
 
 ## 📥 Secondary: Video Download
@@ -339,7 +341,7 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 
 ### AI Q&A
 
-1. After analysis is complete on the "AI解析" page, click "AI问答" in the navigation bar.
+1. After analysis is complete, click "去问答" next to the result.
 2. Browse the content outline in the left sidebar — click section headers to expand/collapse details.
 3. Type your question in the input box at the bottom and press Enter to send.
 4. The AI will answer based on the video's subtitle content, citing original text where applicable.
@@ -347,8 +349,8 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 ### Quick Download
 
 1. On the "AI解析" page, paste a video URL and click "解析视频".
-2. After the video info loads, scroll down to the download section.
-3. Select your preferred resolution from the grid.
+2. Open "下载视频" in the video preview.
+3. Select your preferred resolution.
 4. Click "下载视频" and keep the page open while the server prepares the file. Once the transfer starts, follow its progress in your browser's downloads list.
 
 ### Connect a Bilibili or PolyU Panopto session
@@ -416,7 +418,7 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 | `ALLOWED_ORIGINS` | No | CORS allowed origins (comma-separated). Default: `*` (all origins in dev). Set to your domain(s) in production |
 | `YTDLP_NO_CHECK_CERTIFICATES` | No | Skip SSL cert verification for yt-dlp. Default: `false`. Only set to `true` in regions with SSL interference |
 
-On first setup, copy `backend/.env.example` to `backend/.env`. Add your API keys and restart the backend. Select a configured model on the analysis or Q&A page. The default is the first configured provider in this order, DeepSeek, OpenAI, then OpenCode Go. Q&A initially uses the provider that generated the summary when available.
+On first setup, copy `backend/.env.example` to `backend/.env`. Add your API keys and restart the backend. Select a configured model on the analysis or Q&A page. The default is the first configured provider in this order, DeepSeek, OpenAI, then OpenCode Go. The analysis and Q&A pages share the browser’s last model selection. Course Wikis use the model recorded for the source analysis.
 
 OpenCode Go's chat inference is designed for coding agents. Its DeepSeek models require the applicable subscription and region permissions. [DeepSeek platform](https://platform.deepseek.com/), [OpenAI API keys](https://platform.openai.com/api-keys), [OpenCode Go](https://opencode.ai/docs/console/go/)
 

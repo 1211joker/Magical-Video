@@ -1,11 +1,11 @@
 const API_BASE = '/api'
 
-async function readApiError(response, fallback) {
+export async function readApiError(response, fallback) {
   const detail = await response.json().catch(() => ({}))
   return Object.assign(new Error(detail.detail || detail.error || fallback), { code: detail.code })
 }
 
-function videoRequest(url, { cookies, bilibiliSession, panoptoSession } = {}) {
+export function videoRequest(url, { cookies, bilibiliSession, panoptoSession } = {}) {
   const body = { url }
   if (cookies) body.cookies = cookies
   if (bilibiliSession) body.bilibili_session = bilibiliSession

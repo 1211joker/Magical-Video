@@ -1,5 +1,6 @@
 """AI 服务的配置选择、请求和响应转换。"""
 from dataclasses import dataclass, field
+import json
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -57,9 +58,10 @@ PROVIDERS = {
 
 
 class AIServiceError(RuntimeError):
-    def __init__(self, status_code: int, message: str):
+    def __init__(self, status_code: int, message: str, *, outcome_unknown: bool = False):
         super().__init__(message)
         self.status_code = status_code
+        self.outcome_unknown = outcome_unknown
 
 
 def default_provider() -> Optional[AIProvider]:
@@ -97,17 +99,19 @@ def _is_retryable(error: BaseException) -> bool:
     )
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception(_is_retryable),
-    reraise=True,
-)
-async def _post(endpoint: str, body: dict, headers: dict, timeout: int) -> httpx.Response:
+async def _post_once(endpoint: str, body: dict, headers: dict, timeout: int) -> httpx.Response:
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(endpoint, json=body, headers=headers)
         response.raise_for_status()
         return response
+
+
+_post = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception(_is_retryable),
+    reraise=True,
+)(_post_once)
 
 
 def _upstream_error(provider: AIProvider, status_code: int) -> AIServiceError:
@@ -123,7 +127,7 @@ def _upstream_error(provider: AIProvider, status_code: int) -> AIServiceError:
         return AIServiceError(502, f"{label} 无法访问模型 {provider.model}，请检查模型 ID 和账户权限")
     if status_code == 429:
         return AIServiceError(429, f"{label} 达到请求频率或用量限制，请稍后重试")
-    return AIServiceError(502, f"{label} 请求失败（{status_code}）")
+    return AIServiceError(502, f"{label} 请求失败（{status_code}）", outcome_unknown=status_code >= 500)
 
 
 def _output_text(provider: AIProvider, data: dict) -> str:
@@ -145,6 +149,8 @@ async def complete(
     max_tokens: int,
     timeout: int,
     session_id: Optional[UUID] = None,
+    retry_requests: bool = True,
+    json_object: bool = False,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {provider.api_key.strip()}",
@@ -167,15 +173,19 @@ async def complete(
         }
         if provider.id == "opencode-go":
             headers["x-opencode-session"] = f"ses_{(session_id or uuid4()).hex}"
+        if json_object and provider.id == "deepseek":
+            body["response_format"] = {"type": "json_object"}
+            body["thinking"] = {"type": "disabled"}
 
+    post = _post if retry_requests else _post_once
     try:
-        response = await _post(provider.endpoint, body, headers, timeout)
+        response = await post(provider.endpoint, body, headers, timeout)
     except httpx.HTTPStatusError as error:
         raise _upstream_error(provider, error.response.status_code) from error
     except httpx.TimeoutException as error:
-        raise AIServiceError(504, f"{provider.label} 响应超时，请重试") from error
+        raise AIServiceError(504, f"{provider.label} 响应超时，请重试", outcome_unknown=True) from error
     except httpx.RequestError as error:
-        raise AIServiceError(502, f"无法连接 {provider.label}，请检查后端网络") from error
+        raise AIServiceError(502, f"无法连接 {provider.label}，请检查后端网络", outcome_unknown=True) from error
 
     try:
         content = _output_text(provider, response.json())
@@ -184,3 +194,17 @@ async def complete(
     if not isinstance(content, str) or not content.strip():
         raise AIServiceError(502, f"{provider.label} 未返回文本内容，请重试")
     return content.strip()
+
+
+def decode_json_object(content: str) -> dict:
+    """允许模型把 JSON 对象包在代码围栏或简短说明中。"""
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        start, end = content.find("{"), content.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        value = json.loads(content[start:end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("AI 返回内容不是 JSON 对象")
+    return value

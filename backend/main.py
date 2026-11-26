@@ -2,7 +2,10 @@
 FastAPI 应用入口
 """
 import logging
+import os
+import sqlite3
 from contextlib import asynccontextmanager
+from secrets import token_urlsafe
 from dotenv import load_dotenv
 load_dotenv()  # 加载 .env 中的环境变量
 
@@ -20,10 +23,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from config import ALLOWED_ORIGINS
 from limiter import limiter
-from routers import ai, analyze, download, qa
+from routers import ai, analyze, download, qa, study
 from services.ai_client import AIServiceError
 from services.download_service import DownloadJobs
 from services.panopto_service import PanoptoError
+from services.study import StudyService
 from services.video_session import BilibiliSessionError
 from services.youtube_network import YouTubeNetworkUnavailable
 
@@ -32,9 +36,22 @@ from services.youtube_network import YouTubeNetworkUnavailable
 async def lifespan(app: FastAPI):
     download_jobs = DownloadJobs()
     app.state.download_jobs = download_jobs
+    app.state.study = None
+    app.state.study_token = None
+    if os.environ.get("STUDY_ENABLED", "1") != "0":
+        local_study = StudyService()
+        try:
+            local_study.start()
+        except (OSError, RuntimeError, sqlite3.Error):
+            logging.getLogger(__name__).warning("本地资料库无法初始化")
+        else:
+            app.state.study = local_study
+            app.state.study_token = token_urlsafe(32)
     try:
         yield
     finally:
+        if app.state.study is not None:
+            await app.state.study.close()
         await download_jobs.close()
 
 
@@ -102,6 +119,7 @@ app.include_router(ai.router)
 app.include_router(analyze.router)
 app.include_router(download.router)
 app.include_router(qa.router)
+app.include_router(study.router)
 
 
 @app.get("/")

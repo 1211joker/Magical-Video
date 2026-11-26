@@ -1,47 +1,30 @@
 <template>
-  <div class="video-card card fade-enter" v-if="info">
-    <!-- 平台标签 + 封面图 -->
-    <div class="video-hero">
+  <div class="video-preview-info" v-if="info">
+    <div class="video-cover">
       <img
         v-if="info.thumbnail && !thumbFailed"
         :src="thumbnailSrc"
-        :alt="info.title"
+        alt=""
         class="video-thumbnail"
         referrerpolicy="no-referrer"
-        @error="onThumbError"
+        @error="thumbFailed = true"
       />
-      <div v-else class="video-thumbnail placeholder">
-        <span class="placeholder-icon">🎬</span>
-      </div>
-
-      <!-- 平台小标签 -->
-      <span class="platform-badge" :class="'badge-' + info.platform">
-        {{ platformName }}
-      </span>
-
-      <!-- 时长标签 -->
-      <span v-if="info.duration" class="duration-badge">
-        {{ formatDuration(info.duration) }}
-      </span>
+      <svg v-else width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/>
+      </svg>
     </div>
-
-    <!-- 文字信息 -->
     <div class="video-body">
-      <h2 class="video-title">{{ info.title }}</h2>
-
-      <p v-if="info.description" class="video-desc">
-        {{ info.description }}
-      </p>
-      <a v-if="info.platform === 'panopto'" :href="info.webpage_url" target="_blank" rel="noopener noreferrer">
-        在 Panopto 播放 <span aria-hidden="true">↗</span>
+      <p class="video-meta">{{ platformName }}<template v-if="info.duration"> · {{ formatDuration(info.duration) }}</template></p>
+      <h2 class="video-title" :title="info.title">{{ info.title }}</h2>
+      <p v-if="info.description" class="video-desc">{{ info.description }}</p>
+      <a v-if="info.platform === 'panopto'" :href="info.webpage_url" target="_blank" rel="noopener noreferrer" class="video-source">
+        在 Panopto 播放
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M13 5h6v6m0-6-8 8m7 0v5H6V6h5"/>
+        </svg>
       </a>
-    </div>
-
-    <!-- 底部操作栏 -->
-    <div class="video-footer" v-if="info.platform !== 'panopto' && info.formats?.length">
-      <span class="format-count">
-        {{ info.formats.length }} 种清晰度可选
-      </span>
     </div>
   </div>
 </template>
@@ -77,130 +60,86 @@ const platformName = computed(() => {
 function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
-  const s = seconds % 60
+  const s = Math.floor(seconds % 60)
   if (h > 0) {
     return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
   return `${m}:${String(s).padStart(2, '0')}`
 }
-
-function onThumbError() {
-  thumbFailed.value = true
-}
 </script>
 
 <style scoped>
-.video-card {
-  overflow: hidden;
-  padding: 0;
+.video-preview-info {
+  display: grid;
+  grid-template-columns: var(--video-cover-width, 160px) minmax(0, 1fr);
+  gap: clamp(12px, 3vw, 22px);
+  align-items: start;
 }
 
-/* 封面区域 */
-.video-hero {
-  position: relative;
-  width: 100%;
+.video-cover {
+  display: grid;
+  place-items: center;
   aspect-ratio: 16 / 9;
-  background: var(--bg-skeleton);
   overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
 }
+
 .video-thumbnail {
   width: 100%;
   height: 100%;
+  min-height: 0;
   object-fit: cover;
-  display: block;
-}
-.video-thumbnail.placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, var(--bg-skeleton) 0%, var(--bg-hover) 100%);
-}
-.placeholder-icon {
-  font-size: 3rem;
-  opacity: 0.4;
 }
 
-/* 平台小标签 */
-.platform-badge {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  padding: 4px 12px;
-  border-radius: 6px;
-  font-size: 0.8rem;
+.video-body { min-width: 0; }
+
+.video-meta {
+  color: var(--text-secondary);
+  font-size: 0.81rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  backdrop-filter: blur(8px);
-}
-.badge-youtube {
-  background: rgba(255, 0, 0, 0.15);
-  color: #cc0000;
-  border: 1px solid rgba(255, 0, 0, 0.25);
-}
-.badge-bilibili {
-  background: rgba(0, 161, 214, 0.15);
-  color: #0099cc;
-  border: 1px solid rgba(0, 161, 214, 0.25);
-}
-.badge-panopto {
-  background: var(--bg-card);
-  color: var(--text-primary);
+  line-height: 1.4;
 }
 
-/* 时长标签 */
-.duration-badge {
-  position: absolute;
-  bottom: 12px;
-  right: 12px;
-  padding: 3px 10px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.75);
-  color: #fff;
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-/* 文字区域 */
-.video-body {
-  padding: 20px 24px;
-}
 .video-title {
-  font-size: 1.2rem;
+  margin: 5px 0 0;
+  font-size: clamp(1rem, 2.5vw, 1.18rem);
   font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1.5;
-  margin-bottom: 8px;
+  line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-.video-desc {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.video-body a {
-  display: inline-block;
-  margin-top: 8px;
-  font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
-/* 底部操作栏 */
-.video-footer {
-  padding: 14px 24px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.video-desc {
+  margin-top: 5px;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
-.format-count {
-  font-size: 0.85rem;
-  color: var(--text-muted);
+
+.video-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 36px;
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 639px) {
+  .video-title { -webkit-line-clamp: 3; }
+  .video-desc { font-size: 0.81rem; }
 }
 </style>

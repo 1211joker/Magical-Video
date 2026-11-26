@@ -8,6 +8,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from main import app
+from models.schemas import ParseResponse
 from services.ai_client import PROVIDERS
 
 
@@ -132,6 +133,21 @@ class AIProviderRouteTests(unittest.TestCase):
                     self.assertEqual(body["max_output_tokens"], 10000)
                     self.assertIs(body["store"], False)
                     self.assertNotIn("temperature", body)
+
+    def test_bilibili_episode_preview_allows_immediate_analysis(self):
+        url = "https://www.bilibili.com/bangumi/play/ep123"
+        video = SimpleNamespace(
+            info=ParseResponse(platform="bilibili", title="番剧单集", duration=30,
+                               thumbnail="", description="", webpage_url=url),
+            cookies=None,
+            subtitles=AsyncMock(return_value=SimpleNamespace(plain_text=SUBTITLES, segments=[])),
+        )
+        with patch("routers.analyze.open_video", return_value=video):
+            preview = self.client.post("/api/parse", json={"url": url})
+            self.assertEqual(preview.status_code, 200, preview.text)
+            self.assertIs(preview.json()["archive_supported"], False)
+            streamed = self.client.post("/api/analyze-stream", json={"url": url, "provider": "openai"})
+            self.assertIn("字幕分析成功", streamed.text)
 
     def test_go_followup_preserves_history_and_session(self):
         first = self.ask(provider="opencode-go", session_id=SESSION_ID)

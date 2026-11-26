@@ -8,15 +8,15 @@ from typing import AsyncGenerator
 from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
-from urllib.parse import unquote, urlsplit
-import httpx
 from models.schemas import AnalyzeVideoRequest, ParseRequest, ParseResponse
 from services.ai_client import select_provider
 from services.analysis_service import analyze_subtitles
 from services.panopto_service import PanoptoError
+from services.study_sources import supports_archive
+from services.thumbnail_service import ThumbnailError, fetch_thumbnail
 from services.video_service import open_video
 from services.video_session import BilibiliSessionError
-from services.youtube_network import YouTubeNetworkUnavailable, get_youtube_connection
+from services.youtube_network import YouTubeNetworkUnavailable
 from limiter import limiter
 
 router = APIRouter(prefix="/api", tags=["analyze"])
@@ -85,7 +85,7 @@ async def parse_video(req: ParseRequest, request: Request, response: Response):
         )
         if video.info.platform == "panopto" or video.cookies:
             response.headers["Cache-Control"] = "no-store"
-        return video.info
+        return video.info.model_copy(update={"archive_supported": supports_archive(video.info.webpage_url or req.url)})
     except (YouTubeNetworkUnavailable, PanoptoError, BilibiliSessionError):
         raise
     except RuntimeError as e:
@@ -100,33 +100,14 @@ async def proxy_thumbnail(url: str, request: Request):
     """
     封面图代理 — 解决 B站 / YouTube 图片防盗链问题。
     """
-    image_url = unquote(url)
-
-    # 根据图片域名选择 Referer 和代理策略
-    hostname = urlsplit(image_url).hostname or ""
-    is_youtube = any(hostname == domain or hostname.endswith("." + domain) for domain in ("ytimg.com", "youtube.com"))
-    headers = {
-        "Referer": "https://www.youtube.com/" if is_youtube else "https://www.bilibili.com",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    }
-
-    connection = await get_youtube_connection() if is_youtube else None
-    proxy = connection.proxy if connection else None
-
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True, proxy=proxy, trust_env=not is_youtube) as client:
-            resp = await client.get(image_url, headers=headers)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=404, detail="封面图获取失败")
-
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            return StreamingResponse(
-                resp.aiter_bytes(),
-                media_type=content_type,
-                headers={"Cache-Control": "public, max-age=86400"}
-            )
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="封面图加载超时")
+        content, media_type = await fetch_thumbnail(url)
+    except ThumbnailError as error:
+        raise HTTPException(status_code=error.status, detail=str(error)) from None
+    return Response(
+        content, media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post("/analyze-stream")

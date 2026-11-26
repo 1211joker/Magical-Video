@@ -1,13 +1,13 @@
 """
 AI 视频分析服务 — 将字幕文本转换为结构化分析结果
 """
-import json
-import re as _re
+from uuid import UUID
+
 from models.schemas import (
     AnalysisResult, OutlineItem, KeyPoint, ConclusionItem
 )
 from config import AI_ANALYSIS_TIMEOUT
-from services.ai_client import AIProvider, complete
+from services.ai_client import AIProvider, complete, decode_json_object
 
 
 # AI 分析的系统提示词
@@ -73,6 +73,9 @@ async def analyze_subtitles(
     subtitle_text: str,
     video_title: str,
     provider: AIProvider,
+    *,
+    retry_requests: bool = True,
+    session_id: UUID | None = None,
 ) -> AnalysisResult:
     # 更多上下文 → AI 能提取更多细节
     max_chars = 25000
@@ -96,21 +99,14 @@ async def analyze_subtitles(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
-    content = await complete(provider, messages, max_tokens=10000, timeout=AI_ANALYSIS_TIMEOUT)
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-
+    content = await complete(
+        provider, messages, max_tokens=10000, timeout=AI_ANALYSIS_TIMEOUT,
+        session_id=session_id, retry_requests=retry_requests, json_object=True,
+    )
     try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        match = _re.search(r"\{[\s\S]*\}", content)
-        if match:
-            parsed = json.loads(match.group())
-        else:
-            raise RuntimeError("AI 分析结果格式异常，请重试")
+        parsed = decode_json_object(content)
+    except ValueError:
+        raise RuntimeError("AI 分析结果格式异常，请重试") from None
 
     overview = parsed.get("overview", "")
 
@@ -140,7 +136,9 @@ async def analyze_subtitles(
         elif isinstance(item, dict):
             conclusions.append(ConclusionItem(text=item.get("text", "")))
 
-    mindmap = parsed.get("mindmap", {"content": video_title or "视频分析", "children": []})
+    mindmap = parsed.get("mindmap")
+    if not isinstance(mindmap, dict):
+        mindmap = {}
     if not mindmap.get("content"):
         mindmap["content"] = video_title or "视频分析"
     if "children" not in mindmap:

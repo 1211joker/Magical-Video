@@ -10,3 +10,5 @@ python-dotenv>=1.0
 slowapi>=0.1.9
 limits>=5.0
 tenacity>=8.0
+numpy>=1.26,<3
+fastembed==0.9.1

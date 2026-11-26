@@ -1,46 +1,35 @@
 <template>
-  <div class="download-section card" v-if="formats && formats.length > 0">
-    <h3 class="section-title">⬇️ 下载视频</h3>
-
-    <!-- 清晰度选择器 -->
-    <div class="format-selector">
-      <label
-        v-for="fmt in formats"
-        :key="fmt.format_id"
-        class="format-option"
-        :class="{ selected: selectedFormat === fmt.format_id }"
-      >
-        <input
-          type="radio"
-          :value="fmt.format_id"
-          v-model="selectedFormat"
-          class="format-radio"
-        />
-        <span class="format-resolution">{{ fmt.resolution }}</span>
-        <span class="format-size" v-if="fmt.filesize">
-          · 约 {{ formatSize(fmt.filesize) }}
-        </span>
-        <span class="format-size" v-else>· 大小未知</span>
-        <span class="format-ext">· {{ fmt.ext }}</span>
+  <details v-if="formats.length" class="download-section">
+    <summary class="download-toggle">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12m-4-4 4 4 4-4M5 16v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>
+      </svg>
+      <span>下载视频</span>
+      <span v-if="downloading || status === 'error'" class="download-summary-state">
+        {{ downloading ? '准备中…' : '失败' }}
+      </span>
+      <svg class="disclosure-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m6 9 6 6 6-6"/>
+      </svg>
+    </summary>
+    <form class="download-options" @submit.prevent="handleDownload">
+      <label class="download-format">
+        视频清晰度
+        <select v-model="selectedFormat" :disabled="downloading">
+          <option v-for="fmt in formats" :key="fmt.format_id" :value="fmt.format_id">
+            {{ fmt.resolution }}{{ fmt.ext ? ' · ' + fmt.ext.toUpperCase() : '' }}{{ fmt.filesize ? ' · 约 ' + formatSize(fmt.filesize) : '' }}
+          </option>
+        </select>
       </label>
-    </div>
-
-    <!-- 下载按钮 -->
-    <button
-      class="btn-download"
-      :class="btnClass"
-      :disabled="downloading"
-      @click="handleDownload"
-    >
-      <span v-if="downloading" class="spinner"></span>
-      {{ btnText }}
-    </button>
-
-    <!-- 状态消息 -->
-    <p v-if="statusMessage" class="status-msg" :class="statusClass" role="status">
-      {{ statusMessage }}
-    </p>
-  </div>
+      <button class="btn-secondary btn-compact" :disabled="downloading" type="submit">
+        <span v-if="downloading" class="spinner" aria-hidden="true"></span>
+        {{ downloading ? '准备中…' : '开始下载' }}
+      </button>
+      <p v-if="statusMessage" class="download-status" :data-status="status" role="status">{{ statusMessage }}</p>
+    </form>
+  </details>
 </template>
 
 <script setup>
@@ -63,22 +52,6 @@ const downloading = computed(() => status.value === 'preparing')
 const statusMessage = ref('')
 let downloadController = null
 let active = true
-
-const btnClass = computed(() => ({
-  'is-downloading': downloading.value,
-  'is-success': status.value === 'handedOff',
-  'is-error': status.value === 'error'
-}))
-
-const btnText = computed(() => {
-  if (downloading.value) return '正在准备视频…'
-  return '⬇️ 下载视频'
-})
-
-const statusClass = computed(() => ({
-  'msg-success': status.value === 'handedOff',
-  'msg-error': status.value === 'error'
-}))
 
 function formatSize(bytes) {
   if (!bytes) return ''
@@ -139,136 +112,91 @@ watch(() => props.formats, (newFormats) => {
 
 <style scoped>
 .download-section {
-  margin-top: 20px;
+  max-width: min(100%, 23rem);
+  min-width: 0;
 }
 
-.section-title {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 16px;
-}
-
-/* 清晰度选择器 */
-.format-selector {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 18px;
-}
-
-.format-option {
+.download-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border: 1.5px solid var(--border);
+  justify-content: flex-end;
+  gap: 7px;
+  width: fit-content;
+  margin-inline-start: auto;
+  padding: 7px 10px;
+  min-height: 40px;
   border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 0.9rem;
-}
-
-.format-option:hover {
-  border-color: var(--text-muted);
-  background: #f9fafb;
-}
-
-.format-option.selected {
-  border-color: var(--accent);
-  background: #f0f0ff;
-}
-
-.format-radio {
-  width: auto;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
-.format-resolution {
-  font-weight: 700;
-  color: var(--text-primary);
-  min-width: 50px;
-}
-
-.format-size {
-  color: var(--text-secondary);
   font-size: 0.85rem;
-}
-
-.format-ext {
-  color: var(--text-muted);
-  font-size: 0.82rem;
-  text-transform: uppercase;
-}
-
-/* 下载按钮 */
-.btn-download {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 28px;
-  font-size: 0.95rem;
   font-weight: 700;
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.download-toggle::-webkit-details-marker { display: none; }
+
+.download-toggle:hover, .download-section[open] > .download-toggle {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.download-toggle svg { flex: none; }
+.download-section[open] .disclosure-icon { transform: rotate(180deg); }
+.download-summary-state { font-size: 0.75rem; font-weight: 600; }
+.download-section[open] .download-summary-state { display: none; }
+
+.download-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px 10px;
+  min-width: 0;
+  margin-top: 7px;
+  padding: 12px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.25);
-  transition: all 0.2s;
+  background: var(--bg-primary);
 }
 
-.btn-download:hover:not(:disabled) {
-  background: var(--accent-hover);
-  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.35);
-  transform: translateY(-1px);
+.download-format {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
-.btn-download.is-downloading {
-  background: var(--text-muted);
-  box-shadow: none;
-  cursor: not-allowed;
-  transform: none;
+.download-format select {
+  min-width: 0;
+  padding: 7px 9px;
+  min-height: 40px;
+  font-size: 0.86rem;
 }
 
-.btn-download.is-success {
-  background: #16a34a;
-  box-shadow: 0 2px 8px rgba(22, 163, 74, 0.25);
+.download-status {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
-.btn-download.is-error {
-  background: #dc2626;
-  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.25);
-}
+.download-status[data-status="error"] { color: var(--text-primary); }
 
-/* spinner */
 .spinner {
   display: inline-block;
-  width: 16px;
-  height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
-/* 状态消息 */
-.status-msg {
-  margin-top: 12px;
-  font-size: 0.88rem;
-  color: var(--text-secondary);
-}
-
-.msg-success {
-  color: #16a34a;
-  font-weight: 600;
-}
-
-.msg-error {
-  color: #dc2626;
-  font-weight: 600;
+@media (max-width: 639px) {
+  .download-toggle { margin-inline-start: 0; }
 }
 </style>

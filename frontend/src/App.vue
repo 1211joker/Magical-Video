@@ -1,5 +1,5 @@
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'app--wide': route.name === 'qa' }">
     <!-- 无障碍跳过链接 -->
     <a href="#main-content" class="skip-link">跳到主要内容</a>
 
@@ -38,7 +38,10 @@
 
 <script setup>
 import { ref, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import NavBar from './components/NavBar.vue'
+
+const route = useRoute()
 
 // === 主题切换 ===
 const THEME_KEY = 'app-theme-preference'
@@ -83,9 +86,3 @@ onBeforeUnmount(() => {
   mqDark.removeEventListener('change', onSystemThemeChange)
 })
 </script>
-
-<style scoped>
-.app {
-  /* NavBar 自己处理 sticky，这里不需要额外 margin */
-}
-</style>
