@@ -34,6 +34,17 @@ export async function parseVideo(url, credentials) {
   return res.json()
 }
 
+export async function extractSubtitles(url, credentials, signal) {
+  const response = await fetch(`${API_BASE}/subtitles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(videoRequest(url, credentials)),
+    signal,
+  })
+  if (!response.ok) throw await readApiError(response, '字幕提取失败')
+  return response.json()
+}
+
 /**
  * 启动 AI 分析 — 通过 fetch + ReadableStream 接收 SSE 事件。
  *

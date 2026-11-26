@@ -65,6 +65,17 @@
 <script setup>
 const solvedIssues = [
   {
+    id: 20,
+    title: '字幕整理、独立提取和 VTT 下载',
+    description: '平台字幕有时会在一句话中间断行，把两句话的片段放在同一条里，或在滚动时重复显示上一行。',
+    solution: '后端合并相邻的半句话，按原有标点分句并清理重复行。解析视频后，点「提取字幕」即可预览。独立提取结果和 AI 分析的「字幕」页都能下载带时间戳的 .vtt 文件。',
+    verification: '2026-11-26 用公开视频实测，65 条原始字幕整理为 21 条，整理前后的全文一致。Chrome 下载的 .vtt 与预览逐条匹配，GPT-6.2 Sol 分析完成后也显示了同样的 21 条字幕。',
+    video: {
+      title: 'Git Explained in 100 Seconds',
+      url: 'https://www.youtube.com/watch?v=hwP7WQkmECE',
+    },
+  },
+  {
     id: 19,
     title: 'AI 分析和问答可切换模型',
     description: '早期的字幕分析和问答固定使用 DeepSeek 官方服务。',

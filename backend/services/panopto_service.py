@@ -3,7 +3,6 @@
 import math
 import re
 from dataclasses import dataclass, field
-from html import unescape
 from typing import Optional
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from uuid import UUID
@@ -191,8 +190,7 @@ def _caption_segments(rows: list, video_duration: float) -> list:
         caption = row.get("Caption")
         if start is None or not isinstance(caption, str):
             continue
-        caption = " ".join(unescape(re.sub(r"<[^>]+>", " ", caption)).split())
-        if caption:
+        if caption.strip():
             duration = _number(row.get("CaptionDuration")) or _number(row.get("Duration"))
             cues.append((start, duration, caption))
 

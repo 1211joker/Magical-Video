@@ -21,7 +21,7 @@ The core value is the AI analysis pipeline: instead of watching a 30-minute vide
 The primary workflow takes a video URL and produces a structured analysis in four dimensions, plus an interactive mind map:
 
 1. **Parse**: yt-dlp retrieves video metadata (title, duration, thumbnail).
-2. **Extract subtitles.** YouTube uses `youtube-transcript-api`, Bilibili uses yt-dlp to fetch VTT or JSON and PolyU Panopto uses the captions available in the video viewer.
+2. **Extract subtitles.** YouTube uses `youtube-transcript-api`, Bilibili uses yt-dlp to fetch VTT, SRT or JSON, and PolyU Panopto uses captions available in the video viewer. The backend repairs line breaks, separates adjacent sentences and removes repeated rolling captions.
 3. **AI Analysis**: The selected model uses the captions to generate a structured, evidence-backed analysis. Progress is streamed to the frontend via SSE.
 4. **Result Display**: The analysis is rendered in a tabbed interface (Overview, Outline, Key Points, Conclusions) with an interactive mind map powered by markmap.
 
@@ -77,12 +77,13 @@ Magical-Video/
 │   ├── models/schemas.py         # Pydantic models (request/response)
 │   ├── limiter.py                   # Shared slowapi Limiter instance
 │   ├── routers/
-│   │   ├── analyze.py            # /api/parse, /api/analyze-stream, /api/thumbnail
+│   │   ├── analyze.py            # Parse, subtitles, analysis stream and thumbnail endpoints
 │   │   ├── download.py           # /api/download and browser download jobs
 │   │   └── qa.py                 # /api/ask — AI Q&A endpoint
 │   └── services/
 │       ├── ytdlp_service.py      # yt-dlp subprocess wrapper
 │       ├── subtitle_service.py   # Subtitle extraction and parsing
+│       ├── subtitle_format.py    # Caption cleanup shared across platforms
 │       ├── analysis_service.py   # Subtitle analysis
 │       ├── qa_service.py         # Question-answering context
 │       └── ai_client.py         # AI configuration, HTTP requests and retries
@@ -335,7 +336,12 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 4. When Bilibili or PolyU Panopto requires sign-in, follow the instructions in the session panel.
 5. Click "解析视频". The video metadata (title, duration, thumbnail) will appear.
 6. Select a model and start AI analysis. The backend extracts captions and sends them to the selected model. Progress is shown in real time.
-7. When complete, browse the results across four tabs: Overview, Outline, Key Points, and Conclusions. An interactive mind map is available under the "思维导图" tab.
+7. When complete, browse the overview, outline, key points, conclusions and mind map. Open the "字幕" tab to read the organized transcript alongside the results.
+
+### Extract and download subtitles
+
+1. After parsing the video, click "提取字幕" to preview the captions. This works independently of AI analysis.
+2. Click "下载字幕 (.vtt)" to save a WebVTT file with start and end times for each cue. The same download is available under the analysis result’s "字幕" tab.
 
 ### AI Q&A
 

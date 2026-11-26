@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from urllib.parse import unquote, urlsplit
 import httpx
-from models.schemas import AnalyzeVideoRequest, ParseRequest, ParseResponse
+from models.schemas import AnalyzeVideoRequest, ParseRequest, ParseResponse, SubtitleResponse
 from services.ai_client import select_provider
 from services.analysis_service import analyze_subtitles
 from services.panopto_service import PanoptoError
@@ -21,6 +21,21 @@ from limiter import limiter
 
 router = APIRouter(prefix="/api", tags=["analyze"])
 SSE_HEARTBEAT_SECONDS = 15
+
+
+async def _open_requested_video(req: ParseRequest):
+    return await open_video(
+        req.url,
+        cookies=req.cookies,
+        panopto_session=req.panopto_session,
+        bilibili_session=req.bilibili_session,
+    )
+
+
+def _no_subtitles_message(platform: str) -> str:
+    if platform == "panopto":
+        return "该 Panopto 录像没有可用字幕。可以在官方播放器的字幕面板确认。"
+    return "该视频没有可用字幕（可能未开启自动字幕或语言不支持）。"
 
 
 class AnalysisStreamResponse(StreamingResponse):
@@ -77,12 +92,7 @@ async def parse_video(req: ParseRequest, request: Request, response: Response):
         - formats: 可选清晰度列表
     """
     try:
-        video = await open_video(
-            req.url,
-            cookies=req.cookies,
-            panopto_session=req.panopto_session,
-            bilibili_session=req.bilibili_session,
-        )
+        video = await _open_requested_video(req)
         if video.info.platform == "panopto" or video.cookies:
             response.headers["Cache-Control"] = "no-store"
         return video.info
@@ -92,6 +102,27 @@ async def parse_video(req: ParseRequest, request: Request, response: Response):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
+
+
+@router.post("/subtitles", response_model=SubtitleResponse)
+@limiter.limit("10/minute")
+async def extract_subtitles(req: ParseRequest, request: Request, response: Response):
+    """提取和整理字幕，不启动 AI 分析。"""
+    try:
+        video = await _open_requested_video(req)
+        if video.info.platform == "unsupported":
+            raise HTTPException(status_code=400, detail=video.info.description or "暂不支持此平台")
+        subtitles = await video.subtitles()
+    except (YouTubeNetworkUnavailable, PanoptoError, BilibiliSessionError):
+        raise
+    except RuntimeError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if not subtitles:
+        raise HTTPException(status_code=404, detail=_no_subtitles_message(video.info.platform))
+
+    response.headers["Cache-Control"] = "no-store"
+    return SubtitleResponse(subtitle_segments=subtitles.segments, subtitle_text=subtitles.plain_text)
 
 
 @router.get("/thumbnail")
@@ -154,12 +185,7 @@ async def analyze_video_stream(req: AnalyzeVideoRequest, request: Request):
             yield _sse("parse", "processing", "正在获取视频信息...")
 
             try:
-                video = await open_video(
-                    req.url,
-                    cookies=req.cookies,
-                    panopto_session=req.panopto_session,
-                    bilibili_session=req.bilibili_session,
-                )
+                video = await _open_requested_video(req)
             except RuntimeError as e:
                 yield _sse("parse", "failed", str(e))
                 return
@@ -178,12 +204,7 @@ async def analyze_video_stream(req: AnalyzeVideoRequest, request: Request):
             subtitle_data = await video.subtitles()
 
             if not subtitle_data:
-                message = (
-                    "该 Panopto 录像没有可用字幕。可以在官方播放器的字幕面板确认。"
-                    if video_info.platform == "panopto"
-                    else "该视频没有可用字幕（可能未开启自动字幕或语言不支持）\n可以尝试提供中文字幕的视频链接"
-                )
-                yield _sse("subtitles", "failed", message)
+                yield _sse("subtitles", "failed", _no_subtitles_message(video_info.platform))
                 return
 
             char_count = len(subtitle_data.plain_text)

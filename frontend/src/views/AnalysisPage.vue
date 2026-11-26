@@ -86,21 +86,33 @@
         </p>
         <VideoInfo :info="videoInfo" />
         <p v-if="videoInfo.has_captions === false" class="platform-note">
-          该录像没有可用字幕，暂时无法生成摘要和问答。
+          该录像没有可用字幕，暂时无法提取或分析。
         </p>
 
         <div v-if="videoInfo.has_captions !== false" class="analyze-area">
           <AIProviderSelect v-model="aiProvider" :disabled="analyzing" />
-          <button
-            v-if="!analyzing && (progressSteps.length === 0 || analysisResult)"
-            class="btn-analyze"
-            @click="handleAnalyze"
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
-            </svg>
-            {{ analysisResult ? '重新分析视频' : 'AI 分析视频内容' }}
-          </button>
+          <div class="analysis-actions">
+            <button
+              class="btn-secondary btn-extract-subtitles"
+              type="button"
+              :disabled="analyzing || extractingSubtitles"
+              @click="handleExtractSubtitles"
+            >
+              {{ extractingSubtitles ? '正在提取字幕…' : '提取字幕' }}
+            </button>
+            <button
+              v-if="!analyzing && (progressSteps.length === 0 || analysisResult)"
+              class="btn-analyze"
+              type="button"
+              :disabled="extractingSubtitles"
+              @click="handleAnalyze"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2a10 10 0 1 0 10 10H12V2z"/><circle cx="8" cy="8" r="2"/><path d="M4 16l4-4 3 3 4-4 5 5"/>
+              </svg>
+              {{ analysisResult ? '重新分析视频' : 'AI 分析视频内容' }}
+            </button>
+          </div>
           <p v-if="videoInfo.platform === 'panopto'" class="platform-note">分析时会把课程字幕发送给所选的 AI 服务。</p>
         </div>
 
@@ -122,7 +134,7 @@
           <div v-if="progressSteps.length > 0" class="progress-area card">
             <div class="progress-header">
               <span>{{ progressStatusText }}</span>
-              <button v-if="showRetryButton" class="btn-retry" @click="handleAnalyze">
+              <button v-if="showRetryButton" class="btn-retry" :disabled="extractingSubtitles" @click="handleAnalyze">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
@@ -162,7 +174,18 @@
 
         <!-- 分析结果 -->
         <Transition name="slide-fade">
-          <AnalysisResult v-if="analysisResult" :result="analysisResult" />
+          <AnalysisResult
+            v-if="analysisResult"
+            v-model:active-tab="analysisTab"
+            :result="analysisResult"
+            :subtitle-segments="extractedSubtitles.length ? extractedSubtitles : undefined"
+          />
+          <SubtitleViewer
+            v-else-if="extractedSubtitles.length"
+            class="card extracted-subtitles"
+            :segments="extractedSubtitles"
+            :title="videoInfo.title"
+          />
         </Transition>
 
         <!-- 视频下载 -->
@@ -186,11 +209,12 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { parseVideo, startAnalysis } from '../api/index.js'
+import { extractSubtitles, parseVideo, startAnalysis } from '../api/index.js'
 import { sessionSiteFor } from '../videoSessions.js'
 import AIProviderSelect from '../components/AIProviderSelect.vue'
 import VideoInfo from '../components/VideoInfo.vue'
 import AnalysisResult from '../components/AnalysisResult.vue'
+import SubtitleViewer from '../components/SubtitleViewer.vue'
 import DownloadSection from '../components/DownloadSection.vue'
 import YouTubeNetworkDialog from '../components/YouTubeNetworkDialog.vue'
 import VideoSessionGuide from '../components/VideoSessionGuide.vue'
@@ -210,8 +234,12 @@ const analyzing = ref(false)
 const aiProvider = ref('')
 const analysisResult = ref(null)
 const analysisError = ref('')
+const analysisTab = ref('overview')
 const progressSteps = reactive([])
 let abortAnalysis = null
+const extractingSubtitles = ref(false)
+const extractedSubtitles = ref([])
+let abortSubtitles = null
 
 // 状态持久化 — 页面切换后恢复已解析的视频和 AI 分析结果
 const STATE_KEY = 'analysisPageState'
@@ -316,7 +344,11 @@ async function handleParse(url = urlInput.value.trim()) {
   if (!url || parsing.value) return
 
   abortAnalysis?.abort()
+  abortSubtitles?.abort()
+  abortSubtitles = null
   analyzing.value = false
+  extractingSubtitles.value = false
+  extractedSubtitles.value = []
   parsing.value = true
   errorMsg.value = ''
   networkIssue.value = null
@@ -343,11 +375,39 @@ async function handleParse(url = urlInput.value.trim()) {
   }
 }
 
+async function handleExtractSubtitles() {
+  const url = parsedVideoUrl.value
+  if (!url || extractingSubtitles.value || analyzing.value) return
+
+  const controller = new AbortController()
+  abortSubtitles = controller
+  extractingSubtitles.value = true
+  analysisError.value = ''
+  sessionGuide.value = null
+  const credentials = credentialsFor(url)
+  try {
+    const result = await extractSubtitles(url, credentials, controller.signal)
+    if (controller.signal.aborted) return
+    extractedSubtitles.value = result.subtitle_segments
+    analysisTab.value = 'subtitles'
+  } catch (error) {
+    if (controller.signal.aborted) return
+    analysisError.value = error.message || '字幕提取失败'
+    handleVideoError({ code: error.code, message: analysisError.value }, url, handleExtractSubtitles, credentials)
+  } finally {
+    if (abortSubtitles === controller) {
+      abortSubtitles = null
+      extractingSubtitles.value = false
+    }
+  }
+}
+
 function handleAnalyze() {
   const url = parsedVideoUrl.value
-  if (!url || analyzing.value) return
+  if (!url || analyzing.value || extractingSubtitles.value) return
 
   analyzing.value = true
+  analysisTab.value = 'overview'
   sessionGuide.value = null
   analysisError.value = ''
   analysisResult.value = null
@@ -386,6 +446,7 @@ function handleAnalyze() {
       if (event.status === 'done' && event.result) {
         analyzing.value = false
         analysisResult.value = event.result
+        extractedSubtitles.value = []
         // 存入 localStorage 供 AI 问答页面使用
         try {
           localStorage.setItem('lastAnalysisResult', JSON.stringify({
@@ -420,6 +481,7 @@ onBeforeUnmount(() => {
   if (abortAnalysis) {
     abortAnalysis.abort()
   }
+  abortSubtitles?.abort()
 })
 </script>
 
@@ -587,6 +649,23 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-top: 20px;
   text-align: center;
+}
+
+.analysis-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-extract-subtitles {
+  min-height: 46px;
+}
+
+.extracted-subtitles {
+  margin-top: 20px;
+  padding: 20px;
 }
 
 .btn-analyze {

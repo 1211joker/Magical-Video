@@ -44,7 +44,7 @@ def _proxy_args(connection: Optional[YouTubeConnection]) -> list[str]:
     return ["--proxy", YTDLP_PROXY] if YTDLP_PROXY else []
 
 
-async def _run_ytdlp(command: list[str], url: str, timeout: float) -> tuple[int, bytes, bytes]:
+async def run_ytdlp(command: list[str], url: str, timeout: float) -> tuple[int, bytes, bytes]:
     process = await asyncio.create_subprocess_exec(
         *command, "--", url,
         stdout=asyncio.subprocess.PIPE,
@@ -121,7 +121,7 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
         cmd.extend(_proxy_args(connection))
 
-        returncode, stdout, stderr = await _run_ytdlp(cmd, url, YTDLP_TIMEOUT)
+        returncode, stdout, stderr = await run_ytdlp(cmd, url, YTDLP_TIMEOUT)
 
         if returncode != 0:
             error_msg = stderr.decode("utf-8", errors="replace")
@@ -304,7 +304,7 @@ async def download_video(
             cmd.extend(["--cookies", cookies_file])
         cmd.extend(_proxy_args(connection))
 
-        returncode, stdout, stderr = await _run_ytdlp(cmd, url, DOWNLOAD_TIMEOUT)
+        returncode, stdout, stderr = await run_ytdlp(cmd, url, DOWNLOAD_TIMEOUT)
 
         if returncode != 0:
             if platform == "bilibili":
