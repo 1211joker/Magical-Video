@@ -159,7 +159,7 @@ Vite 开发服务器自动将 `/api` 请求代理到后端 `localhost:8000`。
 项目包含完整的 Docker Compose 生产部署配置，两个容器协同工作：
 
 ```
-浏览器 (80端口)
+浏览器（宿主机 127.0.0.1:8080 或配置的 HTTPS 域名）
     │
     ▼
 ┌──────────────────────────┐
@@ -197,7 +197,7 @@ vim backend/.env
 
 ```bash
 DEEPSEEK_API_KEY=sk-your-key-here       # 必填
-YTDLP_PROXY=http://127.0.0.1:7890       # 可选 — 访问 YouTube 需配置
+# YTDLP_PROXY=http://proxy.example.net:7890 # 可选，填写后端容器可访问的代理
 ALLOWED_ORIGINS=https://your-domain.com # 可选 — 生产环境 CORS 白名单
 ```
 
@@ -209,9 +209,11 @@ docker compose up -d
 docker compose ps
 # 预期输出：backend (Up) + nginx (Up)
 
-# 5. 打开浏览器访问
-# http://你的服务器IP  （本地运行则 http://localhost）
+# 5. 验证宿主机上的访问入口
+curl -fsS http://127.0.0.1:8080/api/health
 ```
+
+在运行 Docker 的电脑上打开 [http://localhost:8080](http://localhost:8080)。从其他设备访问时，使用下方配置的 HTTPS 域名。
 
 #### 日常管理
 
@@ -242,11 +244,11 @@ docker compose up -d --build        # 重新构建并启动
 
 #### HTTPS 配置
 
-默认配置使用 HTTP（80 端口）。生产环境需要添加 SSL 证书，两种方式：
+默认配置将容器的 HTTP 端口 80 映射到宿主机 `127.0.0.1:8080`。生产环境可由宿主代理或容器提供 HTTPS。
 
 **方案 A — 前置反向代理（推荐）**
 
-使用宿主机已有的 nginx/Caddy 处理 SSL，转发到 Docker nginx 容器：
+宿主机的 Nginx 可用以下配置处理 HTTPS 并转发到容器。
 
 ```nginx
 # 宿主机 nginx 示例
@@ -257,23 +259,27 @@ server {
     ssl_certificate_key /path/to/key.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:80;  # Docker nginx 端口
+        proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
     }
 }
 ```
 
+容器 Nginx 从 Compose 网关接收宿主代理的客户端地址，Uvicorn 仅信任容器 Nginx 的内部地址。SlowAPI 据此按客户端 IP 计数。若调整 Compose 网关，需同步 `nginx.conf` 的 `set_real_ip_from`。
+
 **方案 B — Docker 内部 SSL**
 
-将证书挂载到容器内，在 `nginx.conf` 中添加 443 监听，并更新 `docker-compose.yml` 暴露 443 端口。
+将证书挂载到容器内，在 `nginx.conf` 中新增单独的 443 服务块，并更新 `docker-compose.yml` 暴露 443 端口。直接接收公网请求的 443 服务块以连接来源为准，沿用 API 转发配置，并将宿主代理的 realip 信任设置留在原有的 HTTP 服务块。
 
 ```yaml
-# docker-compose.yml nginx 服务追加
+# docker-compose.yml 中 nginx 服务的配置
 ports:
-  - "80:80"
+  - "127.0.0.1:8080:80"
   - "443:443"
 volumes:
   - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -285,10 +291,10 @@ volumes:
 
 | 问题 | 检查方法 |
 |------|----------|
-| `80 端口已被占用` | 有其他 Web 服务在运行。停止它或在 `docker-compose.yml` 中修改 nginx 端口 |
+| `8080 端口已被占用` | 在 `docker-compose.yml` 中调整宿主机映射端口，并同步访问地址和宿主反向代理 |
 | 后端无法连接 DeepSeek | 检查 `backend/.env` 中的 `DEEPSEEK_API_KEY`，运行 `docker compose logs backend` 查看日志 |
 | YouTube 功能不可用 | 在 `backend/.env` 中配置 `YTDLP_PROXY`，然后 `docker compose up -d --build` 重建 |
-| 浏览器显示空白页 | DNS 或防火墙问题。确认服务器 IP 和端口可访问 |
+| 浏览器显示空白页 | 在宿主机检查 `127.0.0.1:8080` 是否可用，再检查 HTTPS 入口的转发地址 |
 | 容器反复重启 | `docker compose logs backend` — 常见原因为缺少 `.env` 或 API Key 无效 |
 | 限流 429 错误 | 已触发单 IP 限流，等待 1 分钟计数器自动重置 |
 

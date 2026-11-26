@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from contextlib import contextmanager
+from typing import Callable, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -51,7 +52,7 @@ def download_errors():
 
 
 class DownloadFileResponse(FileResponse):
-    def __init__(self, video: PreparedVideo):
+    def __init__(self, video: PreparedVideo, release: Optional[Callable[[], None]] = None):
         filename = video.path.name
         super().__init__(
             video.path,
@@ -60,22 +61,26 @@ class DownloadFileResponse(FileResponse):
             headers={"X-Filename": quote(filename, safe=""), "Cache-Control": "no-store"},
         )
         self.video = video
+        self.release = release
 
     async def __call__(self, scope, receive, send):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await asyncio.shield(self.video.remove())
+            if self.release is None:
+                await asyncio.shield(self.video.remove())
+            else:
+                self.release()
 
 
-def download_response(download: PreparedDownload) -> Response:
+def download_response(download: PreparedDownload, release: Optional[Callable[[], None]] = None) -> Response:
     if isinstance(download, DownloadRedirect):
         return RedirectResponse(
             download.url,
             status_code=303,
             headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
-    return DownloadFileResponse(download)
+    return DownloadFileResponse(download, release)
 
 
 @router.post("/download")
@@ -124,5 +129,5 @@ async def cancel_download_job(job_id: str, jobs: DownloadJobs = Depends(get_down
 @router.get("/download/jobs/{job_id}/file")
 async def get_download_file(job_id: str, jobs: DownloadJobs = Depends(get_download_jobs)):
     with download_errors():
-        download = jobs.claim(job_id)
-    return download_response(download)
+        download, release = jobs.acquire(job_id)
+    return download_response(download, release)

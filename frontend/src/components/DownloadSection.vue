@@ -62,6 +62,7 @@ const status = ref('idle')
 const downloading = computed(() => status.value === 'preparing')
 const statusMessage = ref('')
 let downloadController = null
+let active = true
 
 const btnClass = computed(() => ({
   'is-downloading': downloading.value,
@@ -87,7 +88,7 @@ function formatSize(bytes) {
 }
 
 async function handleDownload() {
-  if (downloading.value) return
+  if (!active || downloading.value) return
 
   status.value = 'preparing'
   statusMessage.value = '正在准备文件，请保持页面打开。'
@@ -116,14 +117,17 @@ async function handleDownload() {
     } else {
       status.value = 'error'
       statusMessage.value = err.message || '下载失败，请重试'
-      emit('error', err, props.url, credentials)
+      emit('error', err, props.url, credentials, handleDownload)
     }
   } finally {
     downloadController = null
   }
 }
 
-onBeforeUnmount(() => downloadController?.abort())
+onBeforeUnmount(() => {
+  active = false
+  downloadController?.abort()
+})
 
 // 当 formats 变化时（重新解析），重置为第一个
 watch(() => props.formats, (newFormats) => {

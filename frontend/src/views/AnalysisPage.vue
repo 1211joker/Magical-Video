@@ -289,8 +289,8 @@ function handleVideoError({ code, message }, url, retry, credentials) {
   sessionGuide.value = { site, url, message, retry }
 }
 
-function handleDownloadError(error, url, credentials) {
-  handleVideoError(error, url, null, credentials)
+function handleDownloadError(error, url, credentials, retry) {
+  handleVideoError(error, url, error.code?.startsWith('youtube_') ? retry : null, credentials)
 }
 
 function connectSession(value) {
@@ -301,9 +301,9 @@ function connectSession(value) {
 }
 
 function retryYouTubeNetwork() {
-  const { retry } = networkIssue.value
+  const retry = networkIssue.value?.retry
   networkIssue.value = null
-  retry()
+  retry?.()
 }
 
 async function handleParse(url = urlInput.value.trim()) {
@@ -313,6 +313,7 @@ async function handleParse(url = urlInput.value.trim()) {
   analyzing.value = false
   parsing.value = true
   errorMsg.value = ''
+  networkIssue.value = null
   sessionGuide.value = null
   videoInfo.value = null
   analysisResult.value = null
