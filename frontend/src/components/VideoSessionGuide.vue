@@ -15,16 +15,20 @@
         <label for="video-session-value">{{ site.cookieName }} 会话值</label>
         <input
           id="video-session-value"
+          ref="sessionField"
           v-model="sessionValue"
           type="password"
           autocomplete="off"
           spellcheck="false"
           maxlength="8192"
         />
-        <p class="session-note">会话只保留在当前解析页。请在自己信任的项目页面填写。</p>
+        <p class="session-note">
+          {{ site.platform === 'bilibili' ? '当前标签页打开期间，其他 B 站视频可继续使用此会话。' : '会话保留在当前解析页。' }}
+          请在自己信任的项目页面填写。
+        </p>
         <div class="session-actions">
           <button class="btn-primary" :disabled="!sessionValue.trim()" type="submit">
-            {{ retry ? '连接会话并重试' : '连接会话' }}
+            {{ submitLabel }}
           </button>
           <button class="btn-secondary" type="button" @click="$emit('dismiss')">取消</button>
         </div>
@@ -38,17 +42,20 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 
 defineProps({
   site: { type: Object, required: true },
   message: { type: String, default: '' },
-  retry: { type: Boolean, default: false },
+  submitLabel: { type: String, default: '连接会话' },
 })
 
 const emit = defineEmits(['connect', 'dismiss'])
 const secureContext = window.isSecureContext
 const sessionValue = ref('')
+const sessionField = ref(null)
+
+onMounted(() => sessionField.value?.focus())
 
 function connect() {
   const value = sessionValue.value.trim()

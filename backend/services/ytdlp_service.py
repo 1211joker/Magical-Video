@@ -3,7 +3,6 @@ yt-dlp 封装服务 — 通过 subprocess 调用 CLI，不修改 yt-dlp 源码
 """
 import json
 import asyncio
-import subprocess
 import re
 import sys
 import os
@@ -14,6 +13,9 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from anyio import CancelScope
+
 from config import YTDLP_PROXY, YTDLP_TIMEOUT, DOWNLOAD_TIMEOUT, YTDLP_NO_CHECK_CERTIFICATES
 from models.schemas import ParseResponse, FormatInfo
 from services.video_platform import identify_platform
@@ -40,6 +42,28 @@ def _proxy_args(connection: Optional[YouTubeConnection]) -> list[str]:
     if connection is not None:
         return ["--proxy", connection.proxy or ""]
     return ["--proxy", YTDLP_PROXY] if YTDLP_PROXY else []
+
+
+async def run_ytdlp(command: list[str], url: str, timeout: float) -> tuple[int, bytes, bytes]:
+    process = await asyncio.create_subprocess_exec(
+        *command, "--", url,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return process.returncode, stdout, stderr
+    except BaseException:
+        # SSE 断开时 AnyIO 的取消作用域可能继续取消后续等待。
+        with CancelScope(shield=True):
+            with suppress(ProcessLookupError):
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            await process.communicate()
+        raise
 
 
 async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResponse:
@@ -70,17 +94,13 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
     connection = await get_youtube_connection() if platform == "youtube" else None
 
-    # 把 cookies 文本写入临时文件（用后即删）
     cookies_file = None
-    if cookies:
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        )
-        tmp.write(cookies)
-        tmp.close()
-        cookies_file = tmp.name
-
     try:
+        if cookies:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as cookie_file:
+                cookies_file = cookie_file.name
+                cookie_file.write(cookies)
+
         # 构建 yt-dlp 命令
         cmd = [
             sys.executable, "-m", "yt_dlp",
@@ -101,19 +121,9 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
         cmd.extend(_proxy_args(connection))
 
-        # 执行命令
-        process = await asyncio.create_subprocess_exec(
-            *cmd, "--", url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        returncode, stdout, stderr = await run_ytdlp(cmd, url, YTDLP_TIMEOUT)
 
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
-            timeout=YTDLP_TIMEOUT
-        )
-
-        if process.returncode != 0:
+        if returncode != 0:
             error_msg = stderr.decode("utf-8", errors="replace")
             if platform == "bilibili":
                 check_bilibili_login(error_msg, bool(cookies_file))
@@ -152,8 +162,9 @@ async def parse_video_info(url: str, cookies: Optional[str] = None) -> ParseResp
 
     finally:
         # 无论成功失败，用完即删 cookies 临时文件
-        if cookies_file and os.path.exists(cookies_file):
-            os.unlink(cookies_file)
+        if cookies_file:
+            with suppress(FileNotFoundError):
+                os.unlink(cookies_file)
 
 
 def _extract_formats(raw_formats: list) -> list[FormatInfo]:
@@ -264,7 +275,6 @@ async def download_video(
     # -- 2. cookies 临时文件（整次下载共用一份）--
     cookies_file = None
     temp_dir = None
-    process = None
     completed = False
     try:
         if cookies:
@@ -294,19 +304,9 @@ async def download_video(
             cmd.extend(["--cookies", cookies_file])
         cmd.extend(_proxy_args(connection))
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd, "--", url,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=os.name == "posix",
-        )
+        returncode, stdout, stderr = await run_ytdlp(cmd, url, DOWNLOAD_TIMEOUT)
 
-        # 等 yt-dlp 完整下载完成（大文件需要时间）
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=DOWNLOAD_TIMEOUT
-        )
-
-        if process.returncode != 0:
+        if returncode != 0:
             if platform == "bilibili":
                 check_bilibili_login(stderr.decode("utf-8", errors="replace"), bool(cookies_file))
             error_text = _extract_download_error(stderr)
@@ -329,16 +329,10 @@ async def download_video(
     except Exception as error:
         raise RuntimeError(f"下载异常：{error}") from error
     finally:
-        if process is not None and process.returncode is None:
-            with suppress(ProcessLookupError):
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
-            await process.communicate()
-        if temp_dir and not completed:
-            await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
         # cookies 用完即删
         if cookies_file:
             with suppress(FileNotFoundError):
                 os.unlink(cookies_file)
+        if temp_dir and not completed:
+            with CancelScope(shield=True):
+                await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)

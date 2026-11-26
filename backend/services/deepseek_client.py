@@ -50,6 +50,11 @@ async def call_deepseek_api(body: dict, headers: dict, timeout: int = 120) -> ht
         httpx.TimeoutException: 3 次请求均超时
         httpx.HTTPStatusError: 其他 HTTP 错误（由 tenacity reraise 抛出）
     """
+    return await request_deepseek(body, headers, timeout)
+
+
+async def request_deepseek(body: dict, headers: dict, timeout: int = 120) -> httpx.Response:
+    """发送一次请求，由调用方决定结果不明时是否重试。"""
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(DEEPSEEK_API_URL, json=body, headers=headers)
 

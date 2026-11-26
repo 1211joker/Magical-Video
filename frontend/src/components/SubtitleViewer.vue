@@ -91,7 +91,7 @@ function formatTime(seconds) {
   padding: 2px 8px;
   border-radius: 4px;
   background: var(--accent);
-  color: #fff;
+  color: var(--bg-primary);
   font-size: 0.75rem;
   font-weight: 600;
   font-family: var(--font-mono);

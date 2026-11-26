@@ -6,7 +6,7 @@
 
       <!-- 标语 -->
       <p class="hero-tagline">
-        AI 驱动的智能视频分析下载工具
+        AI 视频分析与问答
       </p>
       <p class="hero-desc">
         输入 YouTube、Bilibili 或理大 Panopto 视频链接，自动分析字幕内容并生成结构化摘要
@@ -44,13 +44,14 @@
       </div>
       <div class="feature-item">
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="7 10 12 15 17 10"/>
-          <line x1="12" y1="15" x2="12" y2="3"/>
+          <path d="M21 15a2 2 0 0 1-2 2H9l-6 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 8h8m-8 4h5"/>
         </svg>
-        <span>多清晰度下载</span>
+        <span>基于字幕的问答</span>
       </div>
     </div>
+    <footer class="home-footer">
+      <RouterLink :to="{ name: 'issues' }">问题及优化</RouterLink>
+    </footer>
   </div>
 </template>
 
@@ -66,6 +67,9 @@ import StickFigures from '../components/StickFigures.vue'
   min-height: calc(100dvh - 56px - 80px);
   padding-top: 80px;
 }
+
+.home-footer { margin-top: 28px; text-align: center; }
+.home-footer a { color: var(--text-secondary); font-size: 0.85rem; text-underline-offset: 3px; }
 
 /* ===== 主标题区域 ===== */
 .hero {

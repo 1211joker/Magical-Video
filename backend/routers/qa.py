@@ -82,7 +82,7 @@ async def ask_question(req: QaRequest, request: Request):
         }
     """
     if not DEEPSEEK_API_KEY:
-        raise HTTPException(status_code=500, detail="DeepSeek API Key 未配置")
+        raise HTTPException(status_code=500, detail="AI 服务密钥未配置")
 
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="问题不能为空")
@@ -145,13 +145,12 @@ async def ask_question(req: QaRequest, request: Request):
         resp = await call_deepseek_api(body, headers, timeout=60)
 
         if resp.status_code != 200:
-            error_detail = resp.text[:300]
             if resp.status_code == 401:
-                raise HTTPException(status_code=500, detail="DeepSeek API Key 无效")
+                raise HTTPException(status_code=500, detail="AI 服务密钥无效")
             elif resp.status_code == 429:
                 raise HTTPException(status_code=429, detail="请求过于频繁，请稍后重试")
             elif resp.status_code == 402:
-                raise HTTPException(status_code=402, detail="DeepSeek 账户余额不足")
+                raise HTTPException(status_code=402, detail="AI 服务账户余额不足")
             else:
                 raise HTTPException(status_code=502, detail=f"AI 服务异常（{resp.status_code}）")
 
@@ -166,8 +165,8 @@ async def ask_question(req: QaRequest, request: Request):
         raise HTTPException(status_code=504, detail="AI 响应超时，请重试")
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"请求 AI 服务失败: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=502, detail="请求 AI 服务失败，请稍后重试")
 
     # 提取回答内容
     try:

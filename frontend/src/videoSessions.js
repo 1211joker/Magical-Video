@@ -1,3 +1,5 @@
+import { shallowRef } from 'vue'
+
 const BILIBILI = {
   platform: 'bilibili',
   label: 'B站',
@@ -13,6 +15,34 @@ const PANOPTO = {
   host: 'polyu.ap.panopto.com',
   cookieName: '.ASPXAUTH',
   requestField: 'panoptoSession',
+}
+
+// B站会话随当前标签页使用，切换路由时可继续用于获取视频和字幕。
+const bilibiliSession = shallowRef()
+
+export function useVideoSessions() {
+  const panoptoSession = shallowRef()
+  const sessionRef = site => site.platform === BILIBILI.platform ? bilibiliSession : panoptoSession
+
+  function getSession(site) {
+    return site ? sessionRef(site).value : undefined
+  }
+
+  function connectSession(site, value) {
+    sessionRef(site).value = { [site.requestField]: value }
+  }
+
+  function clearSession(site) {
+    sessionRef(site).value = undefined
+  }
+
+  function restoreLegacyBilibiliSession(cookies) {
+    if (typeof cookies === 'string' && cookies && !bilibiliSession.value) {
+      bilibiliSession.value = { cookies }
+    }
+  }
+
+  return { getSession, connectSession, clearSession, restoreLegacyBilibiliSession }
 }
 
 export function sessionSiteFor(input) {

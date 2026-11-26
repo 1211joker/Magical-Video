@@ -4,7 +4,7 @@ import asyncio
 import secrets
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 from pydantic import SecretStr
 
@@ -53,6 +53,8 @@ async def prepare_download(
 class DownloadJob:
     task: asyncio.Task
     expiry: Optional[asyncio.TimerHandle] = None
+    active_transfers: int = 0
+    idle: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class DownloadJobs:
@@ -81,17 +83,26 @@ class DownloadJobs:
             raise DownloadJobNotFound
         return job.task.result() if job.task.done() else None
 
-    def claim(self, job_id: str) -> PreparedDownload:
-        video = self.result(job_id)
-        if video is None:
+    def acquire(self, job_id: str) -> tuple[PreparedDownload, Optional[Callable[[], None]]]:
+        download = self.result(job_id)
+        if download is None:
             raise DownloadNotReady
-        # 领取和移出任务表在同一个事件循环步骤完成。
-        self._remove_job(job_id)
-        return video
+        if isinstance(download, DownloadRedirect):
+            self._remove_job(job_id)
+            return download, None
+
+        job = self._jobs[job_id]
+        job.active_transfers += 1
+        job.idle.clear()
+        self._cancel_expiry(job)
+        return download, partial(self._release_transfer, job_id, job)
 
     async def discard(self, job_id: str):
+        job = self._jobs.get(job_id)
+        if job is None:
+            return
         cleanup = self._start_cleanup(job_id)
-        if cleanup is not None:
+        if cleanup is not None and not job.active_transfers:
             await asyncio.shield(cleanup)
 
     async def close(self):
@@ -104,6 +115,8 @@ class DownloadJobs:
             job.task.cancel()
         result, = await asyncio.gather(job.task, return_exceptions=True)
         if isinstance(result, PreparedVideo):
+            if job.active_transfers:
+                await job.idle.wait()
             await result.remove()
 
     def _start_cleanup(self, job_id: str) -> Optional[asyncio.Task]:
@@ -117,13 +130,27 @@ class DownloadJobs:
 
     def _remove_job(self, job_id: str) -> Optional[DownloadJob]:
         job = self._jobs.pop(job_id, None)
-        if job is not None and job.expiry is not None:
-            job.expiry.cancel()
+        if job is not None:
+            self._cancel_expiry(job)
         return job
+
+    @staticmethod
+    def _cancel_expiry(job: DownloadJob):
+        if job.expiry is not None:
+            job.expiry.cancel()
+            job.expiry = None
+
+    def _release_transfer(self, job_id: str, job: DownloadJob):
+        job.active_transfers -= 1
+        if job.active_transfers == 0:
+            job.idle.set()
+            self._schedule_expiry(job_id, job.task)
 
     def _schedule_expiry(self, job_id: str, task: asyncio.Task):
         if not task.cancelled():
             task.exception()
         job = self._jobs.get(job_id)
-        if job is not None:
+        if job is not None and not job.active_transfers:
+            # 从文件准备完成或最后一次传输结束起保留同一个下载地址。
+            self._cancel_expiry(job)
             job.expiry = task.get_loop().call_later(self._retention_seconds, self._start_cleanup, job_id)

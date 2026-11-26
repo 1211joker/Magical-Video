@@ -13,12 +13,13 @@
       <!-- 导航链接 -->
       <div class="navbar-links">
         <router-link
-          v-for="item in navItems"
+          v-for="item in visibleItems"
           :key="item.path"
-          :to="item.path"
+          :to="item.path === '/qa' && route.name === 'qa' ? route.fullPath : item.path"
           class="nav-link"
-          :class="{ active: $route.path === item.path }"
-          :aria-current="$route.path === item.path ? 'page' : undefined"
+          :aria-label="item.label"
+          :class="{ active: isActive(item.path) }"
+          :aria-current="isActive(item.path) ? 'page' : undefined"
         >
           <span class="nav-icon" v-html="item.icon"></span>
           <span class="nav-label">{{ item.label }}</span>
@@ -29,6 +30,16 @@
 </template>
 
 <script setup>
+import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { studyApi } from '../api/study.js'
+
+const route = useRoute()
+const studyAvailable = ref(false)
+onMounted(async () => {
+  try { await studyApi.status(); studyAvailable.value = true } catch { /* 资料库入口限于本地 */ }
+})
+
 const navItems = [
   {
     path: '/',
@@ -46,11 +57,13 @@ const navItems = [
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
   },
   {
-    path: '/issues',
-    label: '问题及优化',
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+    path: '/study',
+    label: '资料库',
+    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0 0 4h13"/><path d="M8 7h7m-7 4h5"/></svg>',
   },
 ]
+const visibleItems = computed(() => navItems.filter(item => item.path !== '/study' || studyAvailable.value))
+const isActive = path => route.path === path || (path === '/study' && route.path.startsWith('/study/'))
 </script>
 
 <style scoped>
@@ -60,24 +73,12 @@ const navItems = [
   z-index: 50;
   background: var(--bg-primary);
   border-bottom: 1px solid var(--border);
-  margin: 0 calc(-1 * var(--nav-offset, 0px));
-  padding: 0 var(--nav-offset, 0px);
+  width: 100%;
+  max-width: var(--app-width, 900px);
+  margin: 0 auto;
+  padding: 0 var(--app-gutter, 0px);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-}
-
-/* 为 navbar 匹配 #app 的 padding */
-@media (max-width: 374px) {
-  .navbar { --nav-offset: 10px; }
-}
-@media (min-width: 375px) and (max-width: 639px) {
-  .navbar { --nav-offset: 14px; }
-}
-@media (min-width: 640px) and (max-width: 767px) {
-  .navbar { --nav-offset: 20px; }
-}
-@media (min-width: 768px) {
-  .navbar { --nav-offset: 24px; }
 }
 
 .navbar-inner {
@@ -130,7 +131,7 @@ const navItems = [
   font-family: var(--font-sans);
   font-size: 0.85rem;
   font-weight: 600;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: color var(--duration-fast), background-color var(--duration-fast);
   white-space: nowrap;
 }
 
@@ -171,9 +172,14 @@ const navItems = [
 }
 
 /* ===== 响应式 ===== */
+@media (max-width: 1000px) {
+  .navbar-inner { padding-right: 54px; }
+}
+
 @media (max-width: 639px) {
   .navbar-inner {
     height: 50px;
+    padding-right: 42px;
   }
   .brand-text {
     display: none;
@@ -182,12 +188,8 @@ const navItems = [
     padding: 8px 10px;
     font-size: 0.8rem;
   }
-  .nav-label {
-    display: none;
-  }
   .nav-icon {
-    width: 20px;
-    height: 20px;
+    display: none;
   }
 }
 

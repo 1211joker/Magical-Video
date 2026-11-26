@@ -1,7 +1,7 @@
 <template>
   <div class="mindmap-wrapper">
     <div class="mindmap-toolbar">
-      <button class="btn-download" @click="downloadSVG" aria-label="下载思维导图 SVG 文件">
+      <button type="button" class="btn-secondary btn-compact" @click="downloadSVG" aria-label="下载思维导图 SVG 文件">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
@@ -141,28 +141,6 @@ onBeforeUnmount(() => {
   background: var(--bg-hover);
 }
 
-.btn-download {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 16px;
-  font-size: 0.85rem;
-  font-weight: 600;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-out);
-  min-height: 36px;
-}
-
-.btn-download:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-light);
-}
-
 .mindmap-inner {
   width: 100%;
   min-height: 400px;
@@ -178,10 +156,6 @@ onBeforeUnmount(() => {
 @media (max-width: 639px) {
   .mindmap-toolbar {
     padding: 8px 12px;
-  }
-  .btn-download {
-    padding: 6px 12px;
-    font-size: 0.8rem;
   }
 }
 </style>

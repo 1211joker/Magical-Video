@@ -9,7 +9,6 @@ B站     → yt-dlp 获取字幕文件 → 解析 VTT/JSON → 提取片段
   - segments:   [{start_time, end_time, text}, ...]（给前端展示用）
 """
 import asyncio
-import subprocess
 import sys
 import os
 import tempfile
@@ -25,6 +24,7 @@ from services.panopto_service import PanoptoVideo, get_panopto_captions
 from services.video_platform import identify_platform
 from services.video_session import BilibiliSessionError, check_bilibili_login
 from services.youtube_network import get_youtube_connection
+from services.ytdlp_service import run_ytdlp
 
 logger = logging.getLogger(__name__)
 
@@ -196,12 +196,8 @@ def _parse_bilibili_json_segments(filepath: str) -> list:
 
 # ========== yt-dlp 字幕下载（B站） ==========
 
-def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_dir: str) -> Optional[str]:
-    """
-    同步方法：用 yt-dlp --write-subs 下载 B站 字幕文件到 output_dir。
-
-    返回下载的字幕文件路径，无字幕时返回 None。
-    """
+async def _download_bilibili_subs(url: str, cookies_file: Optional[str], output_dir: str) -> Optional[str]:
+    """获取 B站字幕文件。取消任务时由共享运行器终止 yt-dlp。"""
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--skip-download",
@@ -212,7 +208,6 @@ def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_d
         "--no-playlist",
         "--no-check-certificates",
         "-o", os.path.join(output_dir, "%(title)s.%(ext)s"),
-        url
     ]
     if cookies_file:
         cmd.extend(["--cookies", cookies_file])
@@ -220,11 +215,10 @@ def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_d
         cmd.extend(["--proxy", YTDLP_PROXY])
 
     logger.info(f"[B站字幕] 执行 yt-dlp 命令...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT + 30)
+    returncode, _, stderr = await run_ytdlp(cmd, url, YTDLP_TIMEOUT + 30)
 
-    logger.info(f"[B站字幕] yt-dlp returncode={result.returncode}")
+    logger.info("[B站字幕] yt-dlp returncode=%s", returncode)
     all_files = os.listdir(output_dir)
-    logger.info(f"[B站字幕] 输出目录文件 ({len(all_files)} 个): {all_files}")
 
     SUB_EXTENSIONS = ('.vtt', '.srt', '.ass', '.json')
     sub_files = []
@@ -233,7 +227,7 @@ def _download_bilibili_subs_sync(url: str, cookies_file: Optional[str], output_d
             sub_files.append(os.path.join(output_dir, fname))
 
     if not sub_files:
-        check_bilibili_login(result.stderr, bool(cookies_file), checking_subtitles=True)
+        check_bilibili_login(stderr.decode("utf-8", errors="replace"), bool(cookies_file), checking_subtitles=True)
         logger.warning(f"[B站字幕] 未找到任何字幕文件")
         return None
 
@@ -329,9 +323,7 @@ async def _extract_bilibili_subs(url: str, cookies: Optional[str] = None) -> Opt
     output_dir = tempfile.mkdtemp(prefix="bili_subs_")
 
     try:
-        sub_path = await asyncio.to_thread(
-            _download_bilibili_subs_sync, url, cookies_file, output_dir
-        )
+        sub_path = await _download_bilibili_subs(url, cookies_file, output_dir)
 
         if not sub_path:
             return None

@@ -159,7 +159,7 @@ The Vite dev server proxies `/api` requests to `localhost:8000` automatically.
 The project includes a complete Docker Compose setup for production deployment. Two containers work together:
 
 ```
-Browser (port 80)
+Browser (127.0.0.1:8080 on the host or the configured HTTPS domain)
     │
     ▼
 ┌──────────────────────────┐
@@ -197,7 +197,7 @@ Edit `backend/.env` and fill in:
 
 ```bash
 DEEPSEEK_API_KEY=sk-your-key-here       # Required
-YTDLP_PROXY=http://127.0.0.1:7890       # Optional — for YouTube access
+# YTDLP_PROXY=http://proxy.example.net:7890 # Optional proxy reachable from the backend container
 ALLOWED_ORIGINS=https://your-domain.com # Optional — CORS whitelist in production
 ```
 
@@ -209,9 +209,11 @@ docker compose up -d
 docker compose ps
 # Expected output: backend (Up) + nginx (Up)
 
-# 5. Open your browser
-# http://your-server-ip  (or http://localhost if running locally)
+# 5. Check the host entry point
+curl -fsS http://127.0.0.1:8080/api/health
 ```
+
+Open [http://localhost:8080](http://localhost:8080) on the Docker host. For access from another device, use the HTTPS domain configured below.
 
 #### Managing the Application
 
@@ -242,11 +244,11 @@ docker compose up -d --build        # Rebuild with latest code
 
 #### HTTPS Setup
 
-The default configuration serves HTTP on port 80. For production with HTTPS, add SSL termination. Two approaches:
+The default configuration maps HTTP port 80 in the container to `127.0.0.1:8080` on the host. HTTPS can terminate at the host proxy or in the container.
 
 **Option A — Reverse proxy in front (recommended)**
 
-Use your existing nginx/Caddy on the host to handle SSL and proxy to the Docker nginx container:
+Use this Nginx configuration on the host to terminate HTTPS and forward requests to the container.
 
 ```nginx
 # Host nginx example
@@ -257,23 +259,27 @@ server {
     ssl_certificate_key /path/to/key.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:80;  # Docker nginx port
+        proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
     }
 }
 ```
 
+The container's Nginx accepts the client address from the host proxy through the Compose gateway. Uvicorn trusts the internal address of the Nginx container, so SlowAPI can count requests per client IP. If you change the Compose gateway, update `set_real_ip_from` in `nginx.conf`.
+
 **Option B — SSL inside Docker**
 
-Mount your certificate and add a 443 server block to `nginx.conf`, then update `docker-compose.yml` to expose port 443.
+Mount your certificate, add a separate 443 server block to `nginx.conf` and update `docker-compose.yml` to expose port 443. Reuse the API proxy settings for the public 443 listener and keep the host-proxy real-IP settings in the existing HTTP server block.
 
 ```yaml
-# docker-compose.yml addition for nginx service
+# nginx service settings in docker-compose.yml
 ports:
-  - "80:80"
+  - "127.0.0.1:8080:80"
   - "443:443"
 volumes:
   - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
@@ -285,10 +291,10 @@ volumes:
 
 | Problem | Check |
 |---------|-------|
-| `port 80 already in use` | Another web server is running. Stop it or change the nginx port in `docker-compose.yml` |
+| `port 8080 already in use` | Change the published host port in `docker-compose.yml` and update the access URL and host reverse proxy |
 | Backend can't connect to DeepSeek | Verify `DEEPSEEK_API_KEY` in `backend/.env`. Check `docker compose logs backend` |
 | YouTube features don't work | Configure `YTDLP_PROXY` in `backend/.env`, then `docker compose up -d --build` |
-| `ERR_EMPTY_RESPONSE` in browser | DNS or firewall issue. Verify the server IP and port are accessible |
+| `ERR_EMPTY_RESPONSE` in browser | Check `127.0.0.1:8080` on the Docker host, then check the upstream address of the HTTPS proxy |
 | Container keeps restarting | `docker compose logs backend` — often a missing `.env` or invalid API key |
 | Rate limit (429) errors | You've hit the per-IP rate limit. Wait 1 minute for the counter to reset |
 

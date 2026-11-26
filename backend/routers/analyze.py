@@ -1,7 +1,11 @@
 """
 分析相关 API 路由
 """
+import asyncio
 import json
+from typing import AsyncGenerator
+
+from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from urllib.parse import unquote, urlsplit
@@ -15,6 +19,36 @@ from services.youtube_network import YouTubeNetworkUnavailable, get_youtube_conn
 from limiter import limiter
 
 router = APIRouter(prefix="/api", tags=["analyze"])
+SSE_HEARTBEAT_SECONDS = 15
+
+
+class AnalysisStreamResponse(StreamingResponse):
+    async def stream_response(self, send):
+        try:
+            await super().stream_response(send)
+        finally:
+            # 客户端在发送事件时断开，也要关闭迭代器并取消待完成的工作。
+            with CancelScope(shield=True):
+                await self.body_iterator.aclose()
+
+
+async def _with_heartbeat(events: AsyncGenerator[str, None]) -> AsyncGenerator[str, None]:
+    pending = asyncio.create_task(events.__anext__())
+    try:
+        while True:
+            done, _ = await asyncio.wait((pending,), timeout=SSE_HEARTBEAT_SECONDS)
+            if not done:
+                yield ": keep-alive\n\n"
+                continue
+            yield pending.result()
+            pending = asyncio.create_task(events.__anext__())
+    except StopAsyncIteration:
+        return
+    finally:
+        pending.cancel()
+        with CancelScope(shield=True):
+            await asyncio.gather(pending, return_exceptions=True)
+            await events.aclose()
 
 
 @router.get("/health")
@@ -155,6 +189,7 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
             yield _sse("subtitles", "done", f"已提取 {char_count} 字字幕文本")
 
             # 步骤 3：AI 分析
+            step = "analyze"
             yield _sse("analyze", "processing", "AI 正在分析视频内容，请稍候...")
 
             try:
@@ -180,8 +215,8 @@ async def analyze_video_stream(req: ParseRequest, request: Request):
         except Exception as e:
             yield _sse("error", "failed", f"分析过程出错: {str(e)}")
 
-    return StreamingResponse(
-        event_generator(),
+    return AnalysisStreamResponse(
+        _with_heartbeat(event_generator()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-store",

@@ -2,6 +2,7 @@
 node_modules/
 backend/__pycache__/
 backend/.env
+backend/.study-data/
 *.pyc
 __pycache__/
 .git/

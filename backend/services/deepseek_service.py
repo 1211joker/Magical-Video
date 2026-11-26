@@ -73,10 +73,12 @@ SYSTEM_PROMPT = """你是一个专业的视频内容分析助手。我会给你�
 async def analyze_subtitles(
     subtitle_text: str,
     video_title: str = "",
+    *,
+    api_call=None,
 ) -> AnalysisResult:
     """调用 DeepSeek API 分析字幕文本。"""
     if not DEEPSEEK_API_KEY:
-        raise RuntimeError("DeepSeek API Key 未配置，请在 backend/.env 中设置 DEEPSEEK_API_KEY")
+        raise RuntimeError("AI 服务密钥未配置，请检查后端配置")
 
     # 更多上下文 → AI 能提取更多细节
     max_chars = 25000
@@ -113,7 +115,7 @@ async def analyze_subtitles(
     }
 
     try:
-        resp = await call_deepseek_api(body, headers, timeout=AI_ANALYSIS_TIMEOUT)
+        resp = await (api_call or call_deepseek_api)(body, headers, timeout=AI_ANALYSIS_TIMEOUT)
     except RetryableError as e:
         if e.status_code == 429:
             raise RuntimeError("AI 请求过于频繁，请稍后重试")
@@ -121,13 +123,14 @@ async def analyze_subtitles(
             raise RuntimeError(f"AI 服务异常（{e.status_code}），请稍后重试")
     except httpx.TimeoutException:
         raise RuntimeError("AI 响应超时，请重试")
+    except httpx.RequestError:
+        raise RuntimeError("无法连接 AI 服务，请稍后重试") from None
 
     if resp.status_code != 200:
-        error_detail = resp.text[:300]
         if resp.status_code == 401:
-            raise RuntimeError("DeepSeek API Key 无效，请检查 .env 中的 DEEPSEEK_API_KEY")
+            raise RuntimeError("AI 服务密钥无效，请检查后端配置")
         elif resp.status_code == 402:
-            raise RuntimeError("DeepSeek 账户余额不足，请充值后重试")
+            raise RuntimeError("AI 服务账户余额不足，请充值后重试")
         else:
             raise RuntimeError(f"AI 分析失败（{resp.status_code}），请稍后重试")
 
