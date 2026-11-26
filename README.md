@@ -343,6 +343,8 @@ In Docker, `127.0.0.1` refers to the backend container. Use a proxy address reac
 1. After parsing the video, click "提取字幕" to preview the captions. This works independently of AI analysis.
 2. Click "下载字幕 (.vtt)" to save a WebVTT file with start and end times for each cue. The same download is available under the analysis result’s "字幕" tab.
 
+YouTube share links such as `youtu.be/hwP7WQkmECE` work without `https://`. Cleanup preserves repeated dialogue, overlapping cue durations and Korean word spacing. Panopto tries the next language if cleaning leaves the preferred track empty. See the [subtitle verification record](docs/上线部署改进清单.md#2026-11-26-字幕功能验收).
+
 ### AI Q&A
 
 1. After analysis is complete on the "AI解析" page, click "AI问答" in the navigation bar.

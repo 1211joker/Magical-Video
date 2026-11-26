@@ -5,16 +5,16 @@ from dataclasses import dataclass, replace
 from html import unescape
 
 
+_WORD_TIME = re.compile(r"<\d{2,}:\d{2}(?::\d{2})?[.,]\d{3}>")
 _CAPTION_TAG = re.compile(
     r"</?(?:c(?:\.[^\s.>]+)*|b|i|u|ruby|rt|v|lang|span|font|a|em|strong)(?:\s+[^>]+)?>"
-    r"|<\d{2,}:\d{2}(?::\d{2})?[.,]\d{3}>",
+    rf"|{_WORD_TIME.pattern}",
     re.IGNORECASE,
 )
 _LINE_TAG = re.compile(r"</?(?:br|p|div)(?:\s+[^>]*)?/?>", re.IGNORECASE)
-_CJK = r"\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af"
-_EXTRA_SPACE = re.compile(
-    rf"(?<=[{_CJK}]) (?=[{_CJK}])| (?=[，。！？、；：）】」』])|(?<=[（【「『]) "
-)
+_HAN_KANA = r"\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff"
+_HAN_KANA_BREAK = re.compile(rf"(?<=[{_HAN_KANA}])[ \t]*\n[ \t]*(?=[{_HAN_KANA}])")
+_EXTRA_SPACE = re.compile(r" (?=[，。！？、；：）】」』])|(?<=[（【「『]) ")
 _SPEAKER = r"(?:[-—–]|>>)[ \t]+"
 _SENTENCE_END = re.compile(
     rf"""[。！？]+[”’」』）》】]*|[.!?]+["'”’)\]]*(?=\s|$)|\n(?={_SPEAKER})"""
@@ -23,6 +23,7 @@ _ABBREVIATION = re.compile(r"\b(?:[A-Z]|[eE]\.g|[iI]\.e|Mr|Mrs|Ms|Dr|Prof|Sr|Jr|
 _MAX_JOIN_GAP = 0.7
 _MAX_JOIN_SECONDS = 8
 _MAX_JOIN_LENGTH = 120
+_ROLLOVER_TRANSITION = 0.04
 
 
 @dataclass(frozen=True)
@@ -30,10 +31,11 @@ class _Cue:
     start: float
     end: float
     text: str
+    has_word_times: bool = False
 
 
 def _compact(text: str) -> str:
-    return _EXTRA_SPACE.sub("", " ".join(text.split()))
+    return _EXTRA_SPACE.sub("", " ".join(_HAN_KANA_BREAK.sub("", text).split()))
 
 
 def _read_cues(segments: list[dict]) -> list[_Cue]:
@@ -52,29 +54,35 @@ def _read_cues(segments: list[dict]) -> list[_Cue]:
         lines = (_compact(unescape(_CAPTION_TAG.sub("", line))) for line in text.splitlines())
         cleaned = "\n".join(line for line in lines if line)
         if cleaned:
-            cues.append(_Cue(start, max(end, start + 0.001), cleaned))
+            cues.append(_Cue(start, max(end, start + 0.001), cleaned, bool(_WORD_TIME.search(text))))
     return sorted(cues, key=lambda cue: cue.start)
 
 
 def _remove_rollover(cues: list[_Cue]) -> list[_Cue]:
-    """滚动字幕有时会把上一行原样放在新字幕的第一行。"""
+    """带逐词时间戳的滚动更新可能把上一条字幕的末行带进来。"""
     distinct = []
     for cue in cues:
         previous = distinct[-1] if distinct else None
-        if previous and cue.start <= previous.end + 0.04:
-            if cue.text == previous.text and (
-                cue.start < previous.end or min(cue.end - cue.start, previous.end - previous.start) <= 0.04
-            ):
-                distinct[-1] = replace(previous, end=max(previous.end, cue.end))
-                continue
-            first, _, remainder = cue.text.partition("\n")
-            if remainder and first == previous.text.rsplit("\n", 1)[-1]:
-                cue = replace(cue, text=remainder)
+        first, _, remainder = cue.text.partition("\n")
+        if (
+            previous and cue.has_word_times and remainder
+            and cue.start <= previous.end + _ROLLOVER_TRANSITION
+            and first == previous.text.rsplit("\n", 1)[-1]
+        ):
+            # 有些滚动字幕会先用一个极短条目单独保留旧行，再显示下一行。
+            if previous.end - previous.start <= _ROLLOVER_TRANSITION and len(distinct) >= 2:
+                before = distinct[-2]
+                if previous.text == before.text and previous.start <= before.end + _ROLLOVER_TRANSITION:
+                    distinct.pop()
+                    previous = before
+            if previous.start < cue.start < previous.end:
+                distinct[-1] = replace(previous, end=cue.start)
+            cue = replace(cue, text=remainder)
         distinct.append(cue)
     return distinct
 
 
-def _sentence_parts(cue: _Cue, end: float):
+def _sentence_parts(cue: _Cue):
     """用原片段范围估算片段内部的断句时间。"""
     text = cue.text
     offset = 0
@@ -83,12 +91,12 @@ def _sentence_parts(cue: _Cue, end: float):
         part = _compact(text[offset:match.end()])
         if not part or (match.group() == "." and _ABBREVIATION.search(part)):
             continue
-        boundary = cue.start + (end - cue.start) * match.end() / len(text)
+        boundary = cue.start + (cue.end - cue.start) * match.end() / len(text)
         yield _Cue(start, boundary, part), True
         start, offset = boundary, match.end()
     tail = _compact(text[offset:])
     if tail:
-        yield _Cue(start, end, tail), False
+        yield _Cue(start, cue.end, tail), False
 
 
 def normalize_subtitle_segments(segments: list[dict]) -> list[dict]:
@@ -96,18 +104,13 @@ def normalize_subtitle_segments(segments: list[dict]) -> list[dict]:
     cues = _remove_rollover(_read_cues(segments))
     grouped = []
     pending = None
-    for index, cue in enumerate(cues):
-        # 平台可能把前一条字幕保留到后一条开始之后，取后一条的起点作为换行边界。
-        end = cue.end
-        if index + 1 < len(cues):
-            next_start = cues[index + 1].start
-            if next_start > cue.start:
-                end = min(end, next_start)
-        for part, finished in _sentence_parts(cue, end):
+    for cue in cues:
+        for part, finished in _sentence_parts(cue):
             if pending is not None:
-                combined = _compact(f"{pending.text} {part.text}")
+                combined = _compact(f"{pending.text}\n{part.text}")
                 if (
-                    part.start - pending.end <= _MAX_JOIN_GAP
+                    part.start > pending.start and part.end >= pending.end
+                    and part.start - pending.end <= _MAX_JOIN_GAP
                     and part.end - pending.start <= _MAX_JOIN_SECONDS
                     and len(combined) <= _MAX_JOIN_LENGTH
                     and not re.match(_SPEAKER, part.text)

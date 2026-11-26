@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -49,6 +50,24 @@ class SubtitleFormatTests(unittest.TestCase):
         self.assertEqual(result[0]["end_time"], 2)
         self.assertEqual(result[1]["start_time"], 4)
 
+    def test_ordinary_captions_preserve_repeated_dialogue(self):
+        subtitles = _subtitle_data([
+            cue(0, 1, "Yes."),
+            cue(1, 3, "Yes.\nI can see it."),
+        ])
+        self.assertEqual(subtitles.plain_text, "Yes. Yes. I can see it.")
+        self.assertEqual([segment["text"] for segment in subtitles.segments], ["Yes.", "Yes.", "I can see it."])
+
+    def test_independent_overlapping_captions_keep_their_full_ranges(self):
+        source = [cue(0, 5, "Keep reading."), cue(1, 2, "Phone rings.")]
+        self.assertEqual(normalize_subtitle_segments(source), source)
+
+    def test_korean_word_spacing_survives_cleanup(self):
+        expected = [cue(0, 2, "한국어 자막을 읽습니다.")]
+        for text in ("한국어 자막을 읽습니다.", "한국어 자막을\n읽습니다."):
+            with self.subTest(text=text):
+                self.assertEqual(normalize_subtitle_segments([cue(0, 2, text)]), expected)
+
     def test_vtt_rollover_and_srt_numbered_cues(self):
         vtt = (
             "\ufeffWEBVTT\n\nNOTE ignore this block\n00:00.000 --> 00:00.100\nnoise\n\n"
@@ -72,6 +91,16 @@ class SubtitleFormatTests(unittest.TestCase):
             "https://youtu.be/hwP7WQkmECE?t=10",
         ):
             self.assertEqual(_extract_video_id(url), "hwP7WQkmECE")
+
+    def test_youtube_caption_id_accepts_links_without_a_scheme(self):
+        for url in (
+            "youtu.be/hwP7WQkmECE?t=10",
+            "www.youtube.com/embed/hwP7WQkmECE",
+            "youtube.com/watch?v=hwP7WQkmECE",
+            "//youtu.be/hwP7WQkmECE",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(_extract_video_id(url), "hwP7WQkmECE")
 
 
 class SubtitleRouteTests(unittest.TestCase):
@@ -105,6 +134,52 @@ class SubtitleRouteTests(unittest.TestCase):
 
 
 class SubtitleCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_http_disconnect_cancels_bilibili_extraction_and_cleans_session_file(self):
+        url = "https://www.bilibili.com/video/BVFixture"
+        download_started = asyncio.Event()
+        incoming = asyncio.Queue()
+        incoming.put_nowait({
+            "type": "http.request",
+            "body": json.dumps({"url": url}).encode(),
+            "more_body": False,
+        })
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/subtitles",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("192.0.2.3", 1234),
+        }
+        directory = None
+
+        async def downloading(_url, cookies_file, output_dir):
+            nonlocal directory
+            directory = output_dir
+            self.assertTrue(cookies_file.is_file())
+            download_started.set()
+            await asyncio.Future()
+
+        async def subtitles():
+            return await _extract_bilibili_subs(url, "fixture-cookie")
+
+        video = SimpleNamespace(info=SimpleNamespace(platform="bilibili"), subtitles=subtitles)
+        with patch("routers.analyze.open_video", return_value=video), \
+             patch("services.subtitle_service._download_bilibili_subs", side_effect=downloading):
+            send = AsyncMock()
+            task = asyncio.create_task(app(scope, incoming.get, send))
+            try:
+                await asyncio.wait_for(download_started.wait(), timeout=1)
+                incoming.put_nowait({"type": "http.disconnect"})
+                await asyncio.wait_for(task, timeout=1)
+                self.assertFalse(directory.exists())
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_cancelled_bilibili_request_cleans_its_temporary_cookies(self):
         directory = None
 

@@ -104,10 +104,7 @@ async def parse_video(req: ParseRequest, request: Request, response: Response):
         raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
 
 
-@router.post("/subtitles", response_model=SubtitleResponse)
-@limiter.limit("10/minute")
-async def extract_subtitles(req: ParseRequest, request: Request, response: Response):
-    """提取和整理字幕，不启动 AI 分析。"""
+async def _requested_subtitles(req: ParseRequest) -> SubtitleResponse:
     try:
         video = await _open_requested_video(req)
         if video.info.platform == "unsupported":
@@ -121,8 +118,35 @@ async def extract_subtitles(req: ParseRequest, request: Request, response: Respo
     if not subtitles:
         raise HTTPException(status_code=404, detail=_no_subtitles_message(video.info.platform))
 
-    response.headers["Cache-Control"] = "no-store"
     return SubtitleResponse(subtitle_segments=subtitles.segments, subtitle_text=subtitles.plain_text)
+
+
+async def _wait_for_disconnect(request: Request):
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
+
+
+@router.post("/subtitles", response_model=SubtitleResponse)
+@limiter.limit("10/minute")
+async def extract_subtitles(req: ParseRequest, request: Request, response: Response):
+    """提取和整理字幕，不启动 AI 分析。"""
+    # FastAPI 已读取请求体，后续的 ASGI 消息用于感知浏览器取消。
+    extraction = asyncio.create_task(_requested_subtitles(req))
+    disconnect = asyncio.create_task(_wait_for_disconnect(request))
+    try:
+        done, _ = await asyncio.wait((extraction, disconnect), return_when=asyncio.FIRST_COMPLETED)
+        if disconnect in done:
+            disconnect.result()
+            return Response(status_code=499)
+        result = extraction.result()
+    finally:
+        extraction.cancel()
+        disconnect.cancel()
+        with CancelScope(shield=True):
+            await asyncio.gather(extraction, disconnect, return_exceptions=True)
+
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @router.get("/thumbnail")

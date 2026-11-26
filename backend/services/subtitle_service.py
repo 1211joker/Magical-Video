@@ -8,14 +8,14 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs
 
 from pydantic import SecretStr
 
 from config import YTDLP_PROXY, YTDLP_TIMEOUT
-from services.panopto_service import PanoptoVideo, get_panopto_captions
+from services.panopto_service import PanoptoVideo, iter_panopto_caption_tracks
 from services.subtitle_format import normalize_subtitle_segments
-from services.video_platform import identify_platform
+from services.video_platform import identify_platform, split_video_url
 from services.video_session import BilibiliSessionError, check_bilibili_login
 from services.youtube_network import get_youtube_connection
 from services.ytdlp_service import run_ytdlp
@@ -120,7 +120,7 @@ async def _download_bilibili_subs(url: str, cookies_file: Optional[Path], output
 
 
 def _extract_video_id(url: str) -> Optional[str]:
-    parsed = urlsplit(url)
+    parsed = split_video_url(url)
     path = parsed.path.strip("/").split("/")
     if parsed.hostname in ("youtu.be", "www.youtu.be"):
         video_id = path[0]
@@ -191,7 +191,11 @@ async def extract_panopto_subtitle_text(
     video: PanoptoVideo,
     session: Optional[SecretStr],
 ) -> Optional[SubtitleData]:
-    return _subtitle_data(await get_panopto_captions(video, session))
+    async for segments in iter_panopto_caption_tracks(video, session):
+        subtitles = _subtitle_data(segments)
+        if subtitles:
+            return subtitles
+    return None
 
 
 async def extract_subtitle_text(url: str, cookies: Optional[str] = None) -> Optional[SubtitleData]:
