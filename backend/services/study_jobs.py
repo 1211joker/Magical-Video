@@ -45,7 +45,14 @@ class LocalStudyJobs:
         with self.database.transaction(write=True) as connection:
             existing = self.temporary.get(job.id) or store.read_job(connection, job.id)
             if existing:
-                if (existing.kind, existing.payload, existing.persistent) != (job.kind, job.payload, job.persistent):
+                # 旧任务允许缺少后来加入的模型和平台鉴权信息。
+                payload = {**existing.payload}
+                requested = {**job.payload}
+                payload.pop("requires_session", None)
+                requested.pop("requires_session", None)
+                if "provider" in requested:
+                    payload.setdefault("provider", requested["provider"])
+                if (existing.kind, payload, existing.persistent) != (job.kind, requested, job.persistent):
                     raise StudyProblem("请求编号已经用于另一个任务", 409, "request_conflict")
                 return existing
             count = connection.execute(

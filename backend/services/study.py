@@ -3,10 +3,12 @@
 import asyncio
 from contextlib import suppress
 import os
-from uuid import NAMESPACE_URL, uuid5
+import time
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from services import study_ai, study_search
-from services.deepseek_service import analyze_subtitles
+from services.ai_client import AIServiceError, default_provider, select_provider
+from services.analysis_service import analyze_subtitles
 from services.panopto_service import PanoptoError
 from services.study_embeddings import LocalEmbeddings, data_directory, index_loop, model_directory
 from services.study_jobs import LocalStudyJobs
@@ -120,8 +122,7 @@ class StudyService:
             conversations.invalidate_turns(connection, conversations.video_turns(connection, video_id, course_id))
             wiki.remove_video_contributions(connection, course_id, video_id)
             connection.execute("DELETE FROM membership WHERE course_id=? AND video_id=?", (course_id, video_id))
-            order = [item["id"] for item in library.course_members(connection, course_id)]
-            library.reorder_course(connection, course_id, order)
+            library.compact_course_order(connection, course_id)
             interrupted = self._drop_tasks(connection, "wiki", {"course_id": course_id, "video_id": video_id})
         for job_id in interrupted:
             self.jobs.interrupt(job_id)
@@ -146,19 +147,18 @@ class StudyService:
     def delete_video(self, video_id, clear_turns):
         with self.database.transaction(write=True) as connection:
             impact = self._impact(connection, video_id)
-            video = library.video_row(connection, video_id)
+            video = connection.execute(
+                "SELECT id, url, platform, external_id FROM videos WHERE id=?", (video_id,),
+            ).fetchone()
             turns = conversations.video_turns(connection, video_id)
             conversations.invalidate_turns(connection, turns, clear=clear_turns)
             for course in impact["courses"]:
                 wiki.remove_video_contributions(connection, course["id"], video_id)
             interrupted = self._drop_tasks(connection, "wiki", {"video_id": video_id})
-            interrupted += self._drop_tasks(connection, "analysis", {"url": video["url"]})
-            archived_job_ids = [row[0] for row in connection.execute(
-                "SELECT id FROM jobs WHERE kind='analysis' AND json_extract(result, '$.video_id')=?",
-                (video_id,),
-            )]
-            connection.executemany("DELETE FROM jobs WHERE id=?", [(job_id,) for job_id in archived_job_ids])
-            connection.execute("DELETE FROM videos WHERE id=?", (video_id,))
+            interrupted += job_store.delete_video_analyses(connection, video)
+            library.delete_video(connection, video)
+            for course in impact["courses"]:
+                library.compact_course_order(connection, course["id"])
         for job_id in interrupted:
             self.jobs.interrupt(job_id)
         return impact
@@ -236,7 +236,9 @@ class StudyService:
             raise StudyProblem("请选择是否允许保存并处理此登录视频的字幕", 400, "private_consent")
         job = StudyJob(
             body.request_id, "analysis", (body.title or "").strip() or "视频分析",
-            {"url": url, "platform": platform, "private": private},
+            {"url": url, "platform": platform, "private": private,
+             "provider": select_provider(body.provider).id,
+             "requires_session": bool(credentials) and platform != "panopto"},
             persistent=body.save,
         )
         return self.jobs.submit(job, credentials)
@@ -250,7 +252,8 @@ class StudyService:
             conversations.scope_title(connection, conversation["scope"], conversation["scope_id"])
         return self.jobs.submit(StudyJob(
             body.request_id, "question", question[:72],
-            {"conversation_id": conversation_id, "question": question, "recall": body.recall},
+            {"conversation_id": conversation_id, "question": question, "recall": body.recall,
+             "provider": select_provider(body.provider).id},
         ))
 
     def task(self, task_id):
@@ -270,15 +273,24 @@ class StudyService:
             raise StudyProblem("请确认允许保存及处理这个登录视频", 400, "private_consent")
         if credentials:
             job.payload["private"] = True
-        if job.checkpoint is None and job.payload["private"] and not credentials:
+            if job.payload["platform"] != "panopto":
+                job.payload["requires_session"] = True
+        if job.checkpoint is None and self._requires_session(job) and not credentials:
             platform = job.payload["platform"]
             raise StudyProblem("请重新填写平台会话", 401, f"{platform}_login_required")
         return self.jobs.retry(job, credentials)
 
     @staticmethod
-    def _target(job):
-        return {key: job.payload[key] for key in ("url", "platform", "private", "course_id", "video_id", "conversation_id")
-                if key in job.payload}
+    def _requires_session(job):
+        return job.payload.get("requires_session", job.payload["private"] and job.payload["platform"] != "panopto")
+
+    @classmethod
+    def _target(cls, job):
+        target = {key: job.payload[key] for key in ("url", "platform", "private", "course_id", "video_id", "conversation_id")
+                  if key in job.payload}
+        if job.kind == "analysis":
+            target["requires_session"] = cls._requires_session(job)
+        return target
 
     @staticmethod
     def _wiki_job_id(course_id, video_id, source_id):
@@ -288,31 +300,60 @@ class StudyService:
     def _queue_wiki(cls, connection, course_id, video_id, source_id):
         job_id = cls._wiki_job_id(course_id, video_id, source_id)
         existing = job_store.read_job(connection, job_id)
+        if existing and existing.state != "done" and existing.code != "source_changed":
+            return existing
+        published = connection.execute(
+            "SELECT source_id FROM wiki_publications WHERE course_id=? AND video_id=?", (course_id, video_id),
+        ).fetchone()
+        if existing and published and published["source_id"] == source_id:
+            return existing
+        provider_id = library.source_provider(connection, source_id)
+        default = default_provider() if not provider_id else None
+        if default:
+            provider_id = default.id
         if existing:
+            existing.state = existing.phase = "queued"
+            existing.checkpoint = existing.result = existing.detail = existing.code = None
+            existing.payload["provider"] = provider_id
+            existing.updated_at = time.time()
+            job_store.update_job(connection, existing)
             return existing
         course = library.course_row(connection, course_id)
         video = library.video_row(connection, video_id)
         job = StudyJob(job_id, "wiki", f'{course["title"]} · {video["title"]}',
-                       {"course_id": course_id, "video_id": video_id, "source_id": source_id})
+                       {"course_id": course_id, "video_id": video_id, "source_id": source_id, "provider": provider_id})
         job_store.insert_job(connection, job)
         return job
 
     async def _execute(self, job, credentials):
-        if job.kind == "analysis":
-            await self._analysis(job, credentials)
-        elif job.kind == "wiki":
-            await self._wiki(job)
-        else:
-            await self._question(job)
+        try:
+            if job.kind == "analysis":
+                await self._analysis(job, credentials)
+            elif job.kind == "wiki":
+                await self._wiki(job)
+            else:
+                await self._question(job)
+        except AIServiceError as error:
+            if error.outcome_unknown:
+                raise StudyProblem("AI 请求结果未知，请确认是否重试", 502, "retry_confirmation") from None
+            raise StudyProblem(str(error), error.status_code, "ai_failed") from None
+
+    def _start_ai(self, job):
+        provider = select_provider(job.payload.get("provider"))
+        job.payload["provider"] = provider.id
+        self.jobs.progress(job, "ai")
+        return provider
 
     async def _fetch_subtitles(self, job, credentials):
-        if job.payload["private"] and not credentials:
+        if self._requires_session(job) and not credentials:
             raise StudyProblem("任务恢复后需要重新填写平台会话", 401, f'{job.payload["platform"]}_login_required')
         self.jobs.progress(job, "fetching")
         try:
             video = await open_video(job.payload["url"], **credentials)
             data = await video.subtitles()
         except (PanoptoError, BilibiliSessionError, YouTubeNetworkUnavailable) as error:
+            if error.code.endswith(("_login_required", "_session_rejected")):
+                job.payload["requires_session"] = True
             raise StudyProblem(str(error), 400, error.code) from None
         except RuntimeError as error:
             raise StudyProblem(str(error), 400, "video_fetch") from None
@@ -340,13 +381,23 @@ class StudyService:
             await self._fetch_subtitles(job, credentials)
         video = job.checkpoint["video"]
         segments = job.checkpoint["segments"]
+        if job.persistent:
+            with self.database.transaction() as connection:
+                deleted = library.deleted_after_submission(connection, video, job.created_at)
+            if deleted:
+                self.jobs.delete_analysis(job.id)
+                return
         plain_text = " ".join(segment["text"] for segment in segments)
-        self.jobs.progress(job, "ai")
+        provider = self._start_ai(job)
         try:
-            analyzed = await analyze_subtitles(plain_text, video["title"], api_call=study_ai.checked_ai_request)
+            analyzed = await analyze_subtitles(
+                plain_text, video["title"], provider, retry_requests=False, session_id=UUID(job.id),
+            )
+        except AIServiceError:
+            raise
         except RuntimeError as error:
             raise StudyProblem(str(error), 502, "analysis_failed") from None
-        analysis = analyzed.model_dump()
+        analysis = {**analyzed.model_dump(), "provider": provider.id}
         if not job.persistent:
             info = {key: video[key] for key in ("platform", "url", "title", "duration", "private")}
             self.jobs.complete(job, {**info, "analysis": analysis, "subtitle_segments": segments})
@@ -376,8 +427,8 @@ class StudyService:
         offset = checkpoint["offset"]
         if offset < len(chunks):
             batch = chunks[offset:offset + WIKI_BATCH_SIZE]
-            self.jobs.progress(job, "ai")
-            result = await study_ai.generate_wiki(batch, existing)
+            provider = self._start_ai(job)
+            result = await study_ai.generate_wiki(batch, existing, provider=provider, session_id=UUID(job.id))
             checked = wiki.verified_pages(result.pages, {chunk["id"]: chunk for chunk in batch})
             checkpoint = {"offset": offset + len(batch), "pages": [*checkpoint["pages"], *checked]}
             if checkpoint["offset"] < len(chunks):
@@ -420,10 +471,10 @@ class StudyService:
                     recalled = study_search.recall_turns(connection, current, query, vector, eligible)
             answer = "当前范围没有找到足够的字幕依据。可以补充视频、讲次或关键词。"
             if evidence:
-                self.jobs.progress(job, "ai")
+                provider = self._start_ai(job)
                 result = await study_ai.generate_answer(
                     question, evidence, [self._short_turn(item) for item in recent],
-                    [self._short_turn(item) for item in recalled],
+                    [self._short_turn(item) for item in recalled], provider=provider, session_id=UUID(conversation_id),
                 )
                 allowed_citations = {item["id"] for item in evidence}
                 allowed_recall = {item["id"] for item in recalled}

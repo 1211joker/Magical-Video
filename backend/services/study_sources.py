@@ -71,6 +71,14 @@ def archive_identity(request_url: str, webpage_url: str) -> tuple[str, str, str]
     raise ValueError("无法取得视频的稳定标识，请使用完整的视频网页链接")
 
 
+def supports_archive(url: str) -> bool:
+    try:
+        video_link(url)
+    except ValueError:
+        return False
+    return True
+
+
 def normalized_segments(items: list) -> list[dict]:
     segments = []
     for value in items:

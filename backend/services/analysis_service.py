@@ -1,14 +1,13 @@
 """
-DeepSeek AI 分析服务 — 将字幕文本发送给 AI，返回四维度结构化分析
+AI 视频分析服务 — 将字幕文本转换为结构化分析结果
 """
-import json
-import re as _re
-import httpx
+from uuid import UUID
+
 from models.schemas import (
     AnalysisResult, OutlineItem, KeyPoint, ConclusionItem
 )
-from config import DEEPSEEK_API_KEY, AI_ANALYSIS_TIMEOUT
-from services.deepseek_client import call_deepseek_api, RetryableError
+from config import AI_ANALYSIS_TIMEOUT
+from services.ai_client import AIProvider, complete, decode_json_object
 
 
 # AI 分析的系统提示词
@@ -72,14 +71,12 @@ SYSTEM_PROMPT = """你是一个专业的视频内容分析助手。我会给你�
 
 async def analyze_subtitles(
     subtitle_text: str,
-    video_title: str = "",
+    video_title: str,
+    provider: AIProvider,
     *,
-    api_call=None,
+    retry_requests: bool = True,
+    session_id: UUID | None = None,
 ) -> AnalysisResult:
-    """调用 DeepSeek API 分析字幕文本。"""
-    if not DEEPSEEK_API_KEY:
-        raise RuntimeError("AI 服务密钥未配置，请检查后端配置")
-
     # 更多上下文 → AI 能提取更多细节
     max_chars = 25000
     if len(subtitle_text) > max_chars:
@@ -98,64 +95,18 @@ async def analyze_subtitles(
 
     user_message = f"视频标题：{video_title}\n\n字幕内容：\n{subtitle_text}"
 
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    body = {
-        "model": "deepseek-v4-flash",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 10000,
-        "stream": False,
-    }
-
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+    content = await complete(
+        provider, messages, max_tokens=10000, timeout=AI_ANALYSIS_TIMEOUT,
+        session_id=session_id, retry_requests=retry_requests, json_object=True,
+    )
     try:
-        resp = await (api_call or call_deepseek_api)(body, headers, timeout=AI_ANALYSIS_TIMEOUT)
-    except RetryableError as e:
-        if e.status_code == 429:
-            raise RuntimeError("AI 请求过于频繁，请稍后重试")
-        else:
-            raise RuntimeError(f"AI 服务异常（{e.status_code}），请稍后重试")
-    except httpx.TimeoutException:
-        raise RuntimeError("AI 响应超时，请重试")
-    except httpx.RequestError:
-        raise RuntimeError("无法连接 AI 服务，请稍后重试") from None
-
-    if resp.status_code != 200:
-        if resp.status_code == 401:
-            raise RuntimeError("AI 服务密钥无效，请检查后端配置")
-        elif resp.status_code == 402:
-            raise RuntimeError("AI 服务账户余额不足，请充值后重试")
-        else:
-            raise RuntimeError(f"AI 分析失败（{resp.status_code}），请稍后重试")
-
-    data = resp.json()
-
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError):
-        raise RuntimeError("AI 返回格式异常，请重试")
-
-    content = content.strip()
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-
-    try:
-        parsed = json.loads(content)
-    except json.JSONDecodeError:
-        match = _re.search(r"\{[\s\S]*\}", content)
-        if match:
-            parsed = json.loads(match.group())
-        else:
-            raise RuntimeError("AI 分析结果格式异常，请重试")
+        parsed = decode_json_object(content)
+    except ValueError:
+        raise RuntimeError("AI 分析结果格式异常，请重试") from None
 
     overview = parsed.get("overview", "")
 
@@ -185,7 +136,9 @@ async def analyze_subtitles(
         elif isinstance(item, dict):
             conclusions.append(ConclusionItem(text=item.get("text", "")))
 
-    mindmap = parsed.get("mindmap", {"content": video_title or "视频分析", "children": []})
+    mindmap = parsed.get("mindmap")
+    if not isinstance(mindmap, dict):
+        mindmap = {}
     if not mindmap.get("content"):
         mindmap["content"] = video_title or "视频分析"
     if "children" not in mindmap:

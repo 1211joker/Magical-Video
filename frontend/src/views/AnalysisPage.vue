@@ -164,7 +164,8 @@
                 </svg>
                 {{ analyzing ? '提交分析中…' : '开始分析' }}
               </button>
-              <label v-if="studyAvailable" class="study-check save-option">
+              <AIProviderSelect v-model="provider" :disabled="analyzing" />
+              <label v-if="canArchive" class="study-check save-option">
                 <input v-model="saveToLibrary" type="checkbox" :disabled="analyzing">
                 保存到资料库
               </label>
@@ -178,8 +179,11 @@
               @error="handleDownloadError"
             />
           </div>
+          <p v-if="canStartAnalysis && studyAvailable && !canArchive" class="platform-note">
+            此链接支持即时分析，结果在当前问答中使用。
+          </p>
           <p v-if="canStartAnalysis && privateSource" class="platform-note">
-            开始分析时，视频字幕会发送给 AI。<template v-if="studyAvailable && saveToLibrary">保存后可加入课程，整理 Wiki 和问答时会向 AI 发送用到的字幕片段。</template>
+            开始分析时，视频字幕会发送给 AI。<template v-if="canArchive && saveToLibrary">保存后可加入课程，整理 Wiki 和问答时会向 AI 发送用到的字幕片段。</template>
           </p>
           <p v-if="previewVideo.has_captions === false" class="platform-note">该录像没有可用字幕，暂时无法生成摘要和问答。</p>
           <p v-if="previewVideo.youtube_connection" class="platform-note" role="status">
@@ -305,13 +309,15 @@ import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { parseVideo, startAnalysis } from '../api/index.js'
 import { studyApi, studyRequestId } from '../api/study.js'
+import { useAIProvider } from '../composables/useAIProvider.js'
 import { useAnalysisRecords } from '../composables/useAnalysisRecords.js'
 import {
   analysisContent, analysisTaskLink, canRetryTask, confirmTaskRetry, isTaskActive,
-  platforms, setImmediateResult, studyChatLink, taskPhases, taskStates, timecode, videoAnalysisLink,
+  platforms, restoreImmediateResult, setImmediateResult, studyChatLink, taskPhases, taskStates, timecode, videoAnalysisLink,
 } from '../studyUi.js'
 import { sessionSiteFor, useVideoSessions } from '../videoSessions.js'
 import VideoInfo from '../components/VideoInfo.vue'
+import AIProviderSelect from '../components/AIProviderSelect.vue'
 import AnalysisResult from '../components/AnalysisResult.vue'
 import DownloadSection from '../components/DownloadSection.vue'
 import StudyManagementDialog from '../components/StudyManagementDialog.vue'
@@ -321,6 +327,7 @@ import VideoSessionGuide from '../components/VideoSessionGuide.vue'
 const urlInput = ref('')
 const route = useRoute()
 const router = useRouter()
+const provider = useAIProvider()
 const {
   taskId, videoId, task, video, loading, loadError, readSelection,
   recent, loadingRecent, recentError, loadRecent, removeRecent,
@@ -343,6 +350,7 @@ const { getSession, connectSession: rememberSession, clearSession, restoreLegacy
 const inputSite = computed(() => sessionSiteFor(urlInput.value))
 const studyAvailable = ref(false)
 const saveToLibrary = ref(true)
+const canArchive = computed(() => studyAvailable.value && videoInfo.value?.archive_supported !== false)
 const privateParsed = ref(false)
 const privateSource = computed(() =>
   privateParsed.value || inputSite.value?.platform === 'panopto' || Boolean(credentialsFor(parsedVideoUrl.value)))
@@ -377,7 +385,7 @@ const questionLink = computed(() => {
 const needsRetryConsent = computed(() =>
   task.value?.state === 'needs_input' && task.value.persistent && !task.value.target.private)
 const retryAnalysisLabel = computed(() => {
-  if (task.value?.state !== 'needs_input') return '重新分析'
+  if (task.value?.state !== 'needs_input' || !task.value.target.requires_session) return '重新分析'
   return credentialsFor(task.value.target.url) ? '用当前会话重试' : '填写会话'
 })
 
@@ -424,7 +432,9 @@ onMounted(() => {
       parsedInput.value = state.parsedInput || state.videoInfo?.source_url || state.videoInfo?.webpage_url || ''
       if (state.analysisResult && parsedVideoUrl.value) {
         analysisResult.value = state.analysisResult
-        immediateId.value = setImmediateResult(state.analysisResult)
+        immediateId.value = cookies || privateSource.value
+          ? setImmediateResult(state.analysisResult)
+          : restoreImmediateResult(state.analysisResult, state.immediateId)
       }
       if (typeof cookies === 'string' && cookies) {
         restoreLegacyBilibiliSession(cookies)
@@ -437,7 +447,7 @@ onMounted(() => {
 })
 
 // 自动保存状态变化
-watch([urlInput, videoInfo, analysisResult], saveAnalysisState, { deep: true })
+watch([urlInput, videoInfo, analysisResult, immediateId], saveAnalysisState, { deep: true })
 watch(() => urlInput.value.trim(), () => { sessionGuide.value = null })
 
 function saveAnalysisState() {
@@ -448,6 +458,7 @@ function saveAnalysisState() {
       parsedInput: parsedInput.value,
       videoInfo: videoInfo.value,
       analysisResult: analysisResult.value,
+      immediateId: immediateId.value,
     }))
   } catch (e) { /* localStorage 可能满了 */ }
 }
@@ -589,22 +600,25 @@ async function handleParse(url = urlInput.value.trim()) {
 }
 
 async function handleAnalyze() {
-  if (!studyAvailable.value) return handleImmediateAnalyze()
+  if (!canArchive.value) return handleImmediateAnalyze()
   const url = parsedVideoUrl.value
   if (!url || analyzing.value) return
   if (requireBilibiliSession(url, '连接会话并分析', handleAnalyze)) return
   sessionGuide.value = null
   const credentials = credentialsFor(url)
   const save = saveToLibrary.value
-  const key = JSON.stringify([url, save, privateSource.value])
+  const selectedProvider = provider.value
+  const key = JSON.stringify([url, save, privateSource.value, selectedProvider])
   if (studyAttempt?.key !== key) studyAttempt = { key, id: studyRequestId() }
   const selection = route.fullPath
   analyzing.value = true
   analysisError.value = ''
+  let useImmediate = false
   try {
-    const queued = await studyApi.analyze(
-      url, credentials, studyAttempt.id, save, privateSource.value && save, videoInfo.value.title.slice(0, 240),
-    )
+    const queued = await studyApi.analyze(url, credentials, {
+      id: studyAttempt.id, save, consent: privateSource.value && save,
+      title: videoInfo.value.title.slice(0, 240), provider: selectedProvider,
+    })
     studyAttempt = null
     if (selection !== route.fullPath || parsedVideoUrl.value !== url) return
     trackBilibiliAttempt(queued.id, credentials)
@@ -612,10 +626,20 @@ async function handleAnalyze() {
     await router.replace(analysisTaskLink(queued.id))
     if (recentPanel.value?.open) loadRecent()
   } catch (error) {
-    if (selection === route.fullPath && parsedVideoUrl.value === url) analysisError.value = error.message
+    if (selection !== route.fullPath || parsedVideoUrl.value !== url) return
+    if (error.code === 'video_link') {
+      // 旧的预览缓存没有归档能力标记。沿用后端校验结果。
+      videoInfo.value = { ...videoInfo.value, archive_supported: false }
+      studyAttempt = null
+      useImmediate = !save
+      if (save) analysisError.value = '该链接支持临时分析。再次点击「开始分析」可继续。'
+    } else {
+      analysisError.value = error.message
+    }
   } finally {
     analyzing.value = false
   }
+  if (useImmediate) handleImmediateAnalyze()
 }
 
 function trackBilibiliAttempt(id, credentials) {
@@ -641,7 +665,7 @@ async function retryAnalysisTask() {
     analysisError.value = '请先确认保存此登录视频。'
     return
   }
-  if (current.state === 'needs_input' && site && !credentials) {
+  if (current.target.requires_session && current.state === 'needs_input' && site && !credentials) {
     sessionGuide.value = { site, url, message: current.detail, retry: retryAnalysisTask, submitLabel: '连接会话并重试' }
     return
   }
@@ -724,14 +748,7 @@ function handleImmediateAnalyze() {
       if (event.status === 'done' && event.result) {
         analyzing.value = false
         analysisResult.value = event.result
-        immediateId.value = setImmediateResult(event.result)
-        if (!privateSource.value) {
-          try {
-            localStorage.setItem('lastAnalysisResult', JSON.stringify({
-              ...event.result, temporaryId: immediateId.value, savedAt: Date.now(),
-            }))
-          } catch { /* localStorage 可能满了 */ }
-        }
+        immediateId.value = setImmediateResult(event.result, { persist: !privateSource.value })
         abortAnalysis = null
       }
     },
@@ -746,7 +763,8 @@ function handleImmediateAnalyze() {
         active.status = 'failed'
         active.message = analysisError.value
       }
-    }
+    },
+    provider.value,
   )
   abortAnalysis = controller
 }

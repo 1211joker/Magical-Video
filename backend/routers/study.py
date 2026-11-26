@@ -1,6 +1,7 @@
 """本地资料库的 HTTP 入口。"""
 
 from ipaddress import ip_address
+from secrets import compare_digest
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -15,6 +16,7 @@ from models.study import (
     VideoGroupInput, VideoLibraryUpdate, WikiLinkInput, WikiPageInput,
 )
 from services.study import StudyService
+from services.ai_client import AIServiceError
 from storage.study_db import StudyProblem
 
 
@@ -27,6 +29,8 @@ class StudyRoute(APIRoute):
                 response = await handler(request)
             except StudyProblem as error:
                 response = JSONResponse({"detail": error.detail, "code": error.code}, status_code=error.status)
+            except AIServiceError as error:
+                response = JSONResponse({"detail": str(error), "code": "ai_unavailable"}, status_code=error.status_code)
             except RequestValidationError:
                 response = JSONResponse(
                     {"detail": "请求参数格式无效", "code": "invalid_request"}, status_code=422,
@@ -58,7 +62,7 @@ def _local_url(value):
     return parsed.scheme in {"http", "https"} and parsed.hostname is not None and _is_loopback(parsed.hostname)
 
 
-def get_study(request: Request) -> StudyService:
+def get_local_study(request: Request) -> StudyService:
     origin = request.headers.get("origin")
     if (not request.client or not _is_loopback(request.client.host)
             or not _local_url(str(request.url))
@@ -69,6 +73,20 @@ def get_study(request: Request) -> StudyService:
     if service is None:
         raise StudyProblem("本地资料库未启用或无法打开", 503, "study_unavailable")
     return service
+
+
+def get_study(request: Request, service: StudyService = Depends(get_local_study)) -> StudyService:
+    supplied = request.headers.get("x-study-token", "").encode()
+    if not compare_digest(supplied, request.app.state.study_token.encode()):
+        raise StudyProblem("请重新建立本地资料库会话", 401, "study_session_required")
+    return service
+
+
+@router.post("/session")
+async def open_session(request: Request, _service: StudyService = Depends(get_local_study)):
+    if request.headers.get("x-study-client") != "1":
+        raise StudyProblem("请从本地应用打开资料库", 403, "study_client_required")
+    return {"token": request.app.state.study_token}
 
 
 @router.get("/status")

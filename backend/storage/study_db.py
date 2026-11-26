@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS video_preferences (
     custom_title TEXT,
     group_id TEXT REFERENCES video_groups(id) ON DELETE SET NULL
 );
+CREATE TABLE IF NOT EXISTS video_deletions (
+    identity_digest TEXT PRIMARY KEY,
+    deleted_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sources (
     id TEXT PRIMARY KEY,
     video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,

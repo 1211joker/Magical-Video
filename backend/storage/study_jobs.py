@@ -38,6 +38,7 @@ class StudyJob:
             "id": self.id, "kind": self.kind, "label": self.label, "state": self.state,
             "phase": self.phase, "detail": self.detail, "code": self.code, "persistent": self.persistent,
             "created_at": self.created_at, "updated_at": self.updated_at,
+            "provider": self.payload.get("provider"),
         }
 
 
@@ -67,6 +68,18 @@ def update_job(connection, job):
 
 def delete_job(connection, job):
     connection.execute("DELETE FROM jobs WHERE id=? AND created_at=?", (job.id, job.created_at))
+
+
+def delete_video_analyses(connection, video):
+    rows = connection.execute(
+        """DELETE FROM jobs WHERE kind='analysis' AND (
+               json_extract(payload, '$.url')=? OR json_extract(result, '$.video_id')=?
+               OR (json_extract(checkpoint, '$.video.platform')=?
+                   AND json_extract(checkpoint, '$.video.external_id')=?)
+           ) RETURNING id""",
+        (video["url"], video["id"], video["platform"], video["external_id"]),
+    )
+    return [row["id"] for row in rows]
 
 
 def recover_jobs(connection):

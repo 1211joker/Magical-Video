@@ -11,16 +11,35 @@ export const taskPhases = {
 export const platforms = { youtube: 'YouTube', bilibili: 'B站', panopto: 'Panopto' }
 
 let immediateResult
+const IMMEDIATE_CACHE = 'lastAnalysisResult'
 
-export function setImmediateResult(result) {
-  const id = crypto.getRandomValues(new Uint32Array(2)).join('-')
+function readImmediateCache() {
+  try { return JSON.parse(localStorage.getItem(IMMEDIATE_CACHE)) } catch { return null }
+}
+
+export function setImmediateResult(result, { persist = false, id = crypto.getRandomValues(new Uint32Array(2)).join('-') } = {}) {
   immediateResult = { id, result, expiresAt: Date.now() + 3600_000 }
+  if (persist) {
+    try {
+      localStorage.setItem(IMMEDIATE_CACHE, JSON.stringify({ ...result, temporaryId: id, savedAt: Date.now() }))
+    } catch { /* 本地存储不可用 */ }
+  }
   return id
+}
+
+export function restoreImmediateResult(result, id) {
+  const cached = readImmediateCache()
+  if (!id && cached?.title === result.title && cached.subtitle_text === result.subtitle_text) {
+    id = cached.temporaryId
+  }
+  return setImmediateResult(result, { id, persist: true })
 }
 
 export function getImmediateResult(id) {
   if (immediateResult && immediateResult.expiresAt <= Date.now()) immediateResult = undefined
-  if (!id || immediateResult?.id === id) return immediateResult?.result
+  if (immediateResult && (!id || immediateResult.id === id)) return immediateResult.result
+  const cached = readImmediateCache()
+  return (!id || cached?.temporaryId === id) ? cached : null
 }
 
 export function timecode(seconds) {

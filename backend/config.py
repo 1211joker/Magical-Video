@@ -3,9 +3,13 @@
 """
 import os
 
-# DeepSeek AI 配置
+# AI 服务配置。密钥为空时，该服务不接受请求。
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "").strip() or "deepseek-v4-flash"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip() or "gpt-5.4-mini"
+OPENCODE_GO_API_KEY = os.getenv("OPENCODE_GO_API_KEY", "")
+OPENCODE_GO_MODEL = os.getenv("OPENCODE_GO_MODEL", "").strip() or "deepseek-v4.1-flash"
 
 # 网络代理（访问 YouTube 用，可选）
 YTDLP_PROXY = os.getenv("YTDLP_PROXY", "")

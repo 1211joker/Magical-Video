@@ -15,8 +15,7 @@ function localValue(key) {
 
 function immediateAnalysis(temporaryId) {
   const id = temporaryId === '1' ? undefined : temporaryId
-  const stored = localValue('lastAnalysisResult')
-  const data = getImmediateResult(id) ?? (!id || stored?.temporaryId === id ? stored : null)
+  const data = getImmediateResult(id)
   return data?.subtitle_text && data?.title ? data : null
 }
 
@@ -214,7 +213,7 @@ export function useStudyQuestions() {
     }
   })
 
-  async function send(question, recall) {
+  async function send(question, recall, provider) {
     const generation = visit
     const { kind, id } = context.value
     if (!conversation.value) {
@@ -225,9 +224,9 @@ export function useStudyQuestions() {
       if (!isCurrent(generation)) return
     }
     const conversationId = conversation.value.id
-    const key = JSON.stringify([conversationId, question, recall])
+    const key = JSON.stringify([conversationId, question, recall, provider])
     if (requestAttempt?.key !== key) requestAttempt = { key, id: studyRequestId() }
-    const job = await studyApi.ask(conversationId, question, requestAttempt.id, recall)
+    const job = await studyApi.ask(conversationId, question, requestAttempt.id, recall, provider)
     if (!isCurrent(generation)) return
     if (job.state !== 'done' && !conversation.value.tasks.some(task => task.id === job.id)) {
       conversation.value.tasks.push({ ...job, question })

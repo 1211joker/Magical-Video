@@ -1,19 +1,27 @@
 import asyncio
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from dataclasses import replace
+import json
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import httpx
 from fastapi.testclient import TestClient
 
 from main import app
 from models.schemas import AnalysisResult
 from models.study import StudyAnswer, WikiDraft
+from services.ai_client import PROVIDERS
+from services.analysis_service import analyze_subtitles
+from services.panopto_service import PanoptoError
+from services.study_ai import generate_answer, generate_wiki
 from services.study_jobs import TEMPORARY_TTL
 from services.subtitle_service import extract_subtitle_text
 from storage.study_db import StudyProblem
@@ -25,6 +33,8 @@ VIDEOS = (
     "https://www.youtube.com/watch?v=Ilg3gGewQ5U",
 )
 PANO = "https://polyu.ap.panopto.com/Panopto/Pages/Viewer.aspx?id=11111111-1111-1111-1111-111111111111"
+BILI = "https://www.bilibili.com/video/BV1ab"
+SHORT = "https://b23.tv/FixtureLink"
 SECRET = "TEST-SESSION-ONLY-IN-MEMORY"
 PUBLIC_CUES = [
     "梯度下降在第一讲介绍沿负梯度调整权重的直觉。",
@@ -43,11 +53,18 @@ async def fake_open(url, **credentials):
     return SimpleNamespace(info=info, subtitles=AsyncMock(return_value=SimpleNamespace(segments=segments)))
 
 
-async def fake_analysis(text, title, **options):
+async def fake_changed_open(url, **credentials):
+    video = await fake_open(url, **credentials)
+    content = await video.subtitles()
+    content.segments[0]["text"] += " 这里补充步长的说明。"
+    return video
+
+
+async def fake_analysis(text, title, provider, **options):
     return AnalysisResult(title=title, overview="课程介绍梯度下降及损失。")
 
 
-async def fake_wiki(chunks, existing):
+async def fake_wiki(chunks, existing, **options):
     chunk = chunks[0]
     return WikiDraft.model_validate({"pages": [
         {
@@ -62,7 +79,7 @@ async def fake_wiki(chunks, existing):
     ]})
 
 
-async def fake_answer(question, evidence, recent, recalled):
+async def fake_answer(question, evidence, recent, recalled, **options):
     return StudyAnswer(
         answer="1. 计算梯度\n2. 沿负梯度更新权重",
         citations=[e["id"] for e in evidence],
@@ -78,13 +95,32 @@ class StudyTests(unittest.TestCase):
         contexts.enter_context(patch.dict(os.environ, {
             "STUDY_DATA_DIR": str(self.data), "STUDY_SEMANTIC": "0", "STUDY_ENABLED": "1",
         }))
+        contexts.enter_context(patch.dict(PROVIDERS, {
+            provider_id: replace(provider, api_key=f"fixture-key-{provider_id}")
+            for provider_id, provider in PROVIDERS.items()
+        }))
         self.open = contexts.enter_context(patch("services.study.open_video", side_effect=fake_open))
         self.analyze = contexts.enter_context(patch("services.study.analyze_subtitles", side_effect=fake_analysis))
         self.wiki = contexts.enter_context(patch("services.study_ai.generate_wiki", side_effect=fake_wiki))
         self.answer = contexts.enter_context(patch("services.study_ai.generate_answer", side_effect=fake_answer))
 
+    @contextmanager
     def client(self):
-        return TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 55000))
+        with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 55000)) as client:
+            response = client.post(PREFIX + "/session", headers={"X-Study-Client": "1"})
+            self.assertEqual(response.status_code, 200, response.text)
+            client.headers["X-Study-Token"] = response.json()["token"]
+            yield client
+
+    def wait_for_phase(self, client, job_id, phase):
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            response = client.get(f"{PREFIX}/tasks/{job_id}")
+            self.assertEqual(response.status_code, 200, response.text)
+            if response.json()["phase"] == phase:
+                return
+            time.sleep(0.02)
+        self.fail(f"task did not reach {phase}")
 
     def wait(self, client, job_id, states=("done",), timeout=4):
         deadline = time.monotonic() + timeout
@@ -123,9 +159,9 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()["id"]
 
-    def ask(self, client, conversation, question, recall=True):
+    def ask(self, client, conversation, question, recall=True, **options):
         response = client.post(f"{PREFIX}/conversations/{conversation}/questions", json={
-            "question": question, "request_id": uuid4().hex, "recall": recall,
+            "question": question, "request_id": uuid4().hex, "recall": recall, **options,
         })
         self.assertEqual(response.status_code, 202, response.text)
         self.wait(client, response.json()["id"])
@@ -172,6 +208,76 @@ class StudyTests(unittest.TestCase):
             self.assertFalse(app.state.study.jobs.credentials)
         for path in self.data.glob("library.sqlite3*"):
             self.assertNotIn(SECRET.encode(), path.read_bytes())
+
+    def test_public_panopto_can_be_analyzed_without_a_session(self):
+        with self.client() as client:
+            job = self.submit(client, PANO, save=False).json()
+            result = self.wait(client, job["id"])["result"]
+            self.assertEqual(result["platform"], "panopto")
+            self.open.assert_awaited_once_with(PANO)
+            self.assertFalse(client.get(PREFIX + "/library").json()["videos"])
+
+    def test_study_tasks_use_selected_providers_and_wait_after_unknown_outcome(self):
+        requests = []
+
+        def upstream(request):
+            body = json.loads(request.content)
+            messages = body["input"] if "input" in body else body["messages"]
+            limit = body.get("max_output_tokens", body.get("max_tokens"))
+            requests.append((request, limit))
+            if len(requests) == 1:
+                raise httpx.ReadTimeout("mock timeout", request=request)
+            if limit == 10000:
+                result = {"overview": "课程介绍梯度下降及损失。"}
+            else:
+                data = json.loads(messages[-1]["content"])
+                chunk = data["subtitles"][0]
+                if limit == 4000:
+                    result = {"pages": [{
+                        "title": "梯度下降",
+                        "claims": [{"chunk_id": chunk["id"], "quote": chunk["text"], "explanation": "解释梯度下降。"}],
+                    }]}
+                else:
+                    result = {"answer": "1. 计算梯度\n2. 沿负梯度更新权重", "citations": [chunk["id"]]}
+            content = "```json\n" + json.dumps(result) + "\n```"
+            if request.url.host == "api.openai.com":
+                return httpx.Response(200, json={"status": "completed", "output": [
+                    {"type": "message", "content": [{"type": "output_text", "text": content}]},
+                ]})
+            return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+        self.analyze.side_effect = analyze_subtitles
+        self.wiki.side_effect = generate_wiki
+        self.answer.side_effect = generate_answer
+        make_client = httpx.AsyncClient
+        transport = httpx.MockTransport(upstream)
+        with patch("services.ai_client.httpx.AsyncClient",
+                   side_effect=lambda **kwargs: make_client(transport=transport, **kwargs)):
+            with self.client() as client:
+                submitted = self.submit(client, provider="openai").json()
+                job = self.wait(client, submitted["id"], states=("needs_retry",))
+                self.assertEqual(job["provider"], "openai")
+                self.assertEqual(job["code"], "retry_confirmation")
+                self.assertEqual(len(requests), 1)
+            with self.client() as client:
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(client.post(f"{PREFIX}/tasks/{job['id']}/retry", json={}).status_code, 202)
+                video = self.wait(client, job["id"])["result"]
+                self.assertEqual(video["analysis"]["provider"], "openai")
+                course = self.course(client)
+                wiki = self.wait(client, self.add(client, course, video["id"]))
+                self.assertEqual(wiki["provider"], "openai")
+                conversation = self.conversation(client, "course", course)
+                turn = self.ask(client, conversation, "梯度下降怎么更新权重？", provider="opencode-go")
+                followup = self.ask(client, conversation, "第二点能再展开讲讲吗", provider="opencode-go")
+                self.assertTrue(turn["citations"] and followup["citations"])
+                self.assertEqual(self.save_video(client, VIDEOS[1])["analysis"]["provider"], "deepseek")
+        self.assertEqual([(request.url.host, limit) for request, limit in requests], [
+            ("api.openai.com", 10000), ("api.openai.com", 10000), ("api.openai.com", 4000),
+            ("opencode.ai", 2800), ("opencode.ai", 2800), ("api.deepseek.com", 10000),
+        ])
+        self.assertEqual({request.headers["x-opencode-session"] for request, limit in requests if limit == 2800},
+                         {f"ses_{conversation}"})
 
     def test_video_group_and_title_survive_reanalysis_and_restart(self):
         groups_url = PREFIX + "/groups"
@@ -300,6 +406,59 @@ class StudyTests(unittest.TestCase):
             client.delete(f"{PREFIX}/videos/{videos[1]['id']}?clear_turns=true")
             self.assertFalse(client.get(f"{PREFIX}/conversations/{initial}").json()["turns"])
 
+    def test_deleting_the_middle_video_updates_course_question_numbers(self):
+        with self.client() as client:
+            videos = [self.save_video(client, url) for url in VIDEOS]
+            course = self.course(client)
+            for video in videos:
+                self.wait(client, self.add(client, course, video["id"]))
+            self.assertEqual(client.delete(f"{PREFIX}/videos/{videos[1]['id']}").status_code, 200)
+            conversation = self.conversation(client, "course", course)
+            turn = self.ask(client, conversation, "第 2 讲如何讨论梯度下降？")
+            self.assertEqual({item["video_id"] for item in turn["citations"]}, {videos[2]["id"]})
+
+    def test_deleting_a_video_cancels_its_resolved_short_link_analysis(self):
+        async def resolve_short(url, **credentials):
+            return await fake_open(BILI if url == SHORT else url, **credentials)
+
+        with self.client() as client:
+            video = self.save_video(client, BILI)
+            self.open.side_effect = resolve_short
+            self.analyze.side_effect = _wait_forever
+            job_id = self.submit(client, SHORT).json()["id"]
+            self.wait_for_phase(client, job_id, "ai")
+            self.assertEqual(client.delete(f"{PREFIX}/videos/{video['id']}").status_code, 200)
+            self.assertEqual(client.get(f"{PREFIX}/tasks/{job_id}").status_code, 404)
+            self.assertFalse(client.get(PREFIX + "/library").json()["videos"])
+
+    def test_deletion_during_short_link_resolution_blocks_stale_archive(self):
+        release = Event()
+
+        async def resolve_later(url, **credentials):
+            if url == SHORT:
+                await asyncio.to_thread(release.wait, 4)
+            return await fake_open(BILI, **credentials)
+
+        with self.client() as client:
+            video = self.save_video(client, BILI)
+            self.open.side_effect = resolve_later
+            job_id = self.submit(client, SHORT).json()["id"]
+            try:
+                self.wait_for_phase(client, job_id, "fetching")
+                self.assertEqual(client.delete(f"{PREFIX}/videos/{video['id']}").status_code, 200)
+            finally:
+                release.set()
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                if client.get(f"{PREFIX}/tasks/{job_id}").status_code == 404:
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("stale short-link analysis survived video deletion")
+            self.assertEqual(self.analyze.await_count, 1)
+            self.assertFalse(client.get(PREFIX + "/library").json()["videos"])
+            self.assertNotEqual(self.save_video(client, SHORT)["id"], video["id"])
+
     def test_ai_interruption_requires_confirmation_and_resumes_from_subtitles(self):
         async def wait_for_shutdown(*args, **kwargs):
             await asyncio.Future()
@@ -308,13 +467,7 @@ class StudyTests(unittest.TestCase):
         with self.client() as client:
             response = self.submit(client).json()
             job_id = response["id"]
-            deadline = time.monotonic() + 4
-            while time.monotonic() < deadline:
-                if client.get(f"{PREFIX}/tasks/{job_id}").json()["phase"] == "ai":
-                    break
-                time.sleep(0.02)
-            else:
-                self.fail("AI stage did not start")
+            self.wait_for_phase(client, job_id, "ai")
         self.analyze.side_effect = fake_analysis
         with self.client() as client:
             job = self.wait(client, job_id, states=("needs_retry",))
@@ -345,13 +498,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(len(client.get(PREFIX + "/library").json()["videos"]), 1)
 
     def test_updated_subtitles_keep_previous_wiki_when_quotes_fail(self):
-        async def changed_video(url, **credentials):
-            video = await fake_open(url, **credentials)
-            content = await video.subtitles()
-            content.segments[0]["text"] += " 这里补充步长的说明。"
-            return video
-
-        async def wrong_quotes(chunks, existing):
+        async def wrong_quotes(chunks, existing, **options):
             draft = await fake_wiki(chunks, existing)
             for page in draft.pages:
                 page.claims[0].quote = "这句话从未出现在原始字幕中。"
@@ -363,7 +510,7 @@ class StudyTests(unittest.TestCase):
             course = self.course(client)
             self.wait(client, self.add(client, course, video["id"]))
             self.wiki.side_effect = wrong_quotes
-            self.open.side_effect = changed_video
+            self.open.side_effect = fake_changed_open
             updated = self.save_video(client)
             self.assertEqual(updated["id"], video["id"])
             self.assertNotEqual(updated["source_id"], video["source_id"])
@@ -379,6 +526,24 @@ class StudyTests(unittest.TestCase):
             self.wait(client, wiki_task)
             self.assertEqual(client.get(course_url).json()["videos"][0]["published_source"], updated["source_id"])
 
+    def test_wiki_republishes_when_subtitles_return_to_an_older_version(self):
+        with self.client() as client:
+            first = self.save_video(client)
+            course = self.course(client)
+            first_wiki = self.add(client, course, first["id"])
+            self.wait(client, first_wiki)
+            url = f"{PREFIX}/courses/{course}"
+            self.open.side_effect = fake_changed_open
+            second = self.save_video(client)
+            next_task = client.get(url).json()["videos"][0]["wiki_task"]["id"]
+            self.wait(client, next_task)
+            self.assertEqual(client.get(url).json()["videos"][0]["published_source"], second["source_id"])
+            self.open.side_effect = fake_open
+            restored = self.save_video(client)
+            self.assertEqual(restored["source_id"], first["source_id"])
+            self.wait(client, first_wiki)
+            self.assertEqual(client.get(url).json()["videos"][0]["published_source"], first["source_id"])
+
     def test_evidence_absence_and_fabricated_citation(self):
         with self.client() as client:
             video = self.save_video(client)
@@ -393,18 +558,17 @@ class StudyTests(unittest.TestCase):
             self.assertFalse(pretend["citations"])
 
     def test_restart_before_private_subtitles_requires_fresh_credentials(self):
+        async def protected_panopto(url, **credentials):
+            if not credentials.get("panopto_session"):
+                raise PanoptoError("panopto_login_required", "需要登录此录像")
+            return await fake_open(url, **credentials)
+
         self.open.side_effect = _wait_forever
         with self.client() as client:
             first = self.submit(client, PANO, panopto_session=SECRET, private_consent=True).json()
             job_id = first["id"]
-            deadline = time.monotonic() + 4
-            while time.monotonic() < deadline:
-                if client.get(f"{PREFIX}/tasks/{job_id}").json()["phase"] == "fetching":
-                    break
-                time.sleep(0.02)
-            else:
-                self.fail("fetch stage did not start")
-        self.open.side_effect = fake_open
+            self.wait_for_phase(client, job_id, "fetching")
+        self.open.side_effect = protected_panopto
         with self.client() as client:
             self.assertEqual(self.wait(client, job_id, states=("needs_input",))["code"], "panopto_login_required")
             path = f"{PREFIX}/tasks/{job_id}/retry"
@@ -415,11 +579,19 @@ class StudyTests(unittest.TestCase):
 
     def test_loopback_boundary(self):
         with self.client() as client:
+            original = client.headers["X-Study-Token"]
             blocked = client.get(PREFIX + "/library", headers={"Origin": "https://example.invalid"})
             self.assertEqual(blocked.status_code, 403)
             self.assertEqual(blocked.headers["Cache-Control"], "no-store")
             self.assertEqual(client.get(PREFIX + "/library", headers={"Sec-Fetch-Site": "same-site"}).status_code, 403)
             self.assertEqual(client.get(PREFIX + "/library", headers={"Sec-Fetch-Site": "same-origin"}).status_code, 200)
+            self.assertEqual(client.get(PREFIX + "/library", headers={"X-Study-Token": ""}).status_code, 401)
+            self.assertEqual(client.post(PREFIX + "/session").status_code, 403)
+            self.assertEqual(client.post(PREFIX + "/session", headers={
+                "X-Study-Client": "1", "Sec-Fetch-Site": "cross-site",
+            }).status_code, 403)
+        with self.client() as client:
+            self.assertEqual(client.get(PREFIX + "/library", headers={"X-Study-Token": original}).status_code, 401)
 
 
 async def _wait_forever(*args, **kwargs):

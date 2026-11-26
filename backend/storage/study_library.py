@@ -106,6 +106,34 @@ def video_detail(connection, video_id, source_id=None):
     return video
 
 
+def source_provider(connection, source_id):
+    source = connection.execute(
+        "SELECT json_extract(analysis, '$.provider') AS provider FROM sources WHERE id=?", (source_id,),
+    ).fetchone()
+    return source["provider"] if source else None
+
+
+def _identity_digest(video):
+    return sha256(pack([video["platform"], video["external_id"]]).encode()).hexdigest()
+
+
+def delete_video(connection, video):
+    # 在拿到短链指向之前，后台任务无法按视频标识直接定位。
+    connection.execute(
+        """INSERT INTO video_deletions VALUES (?, ?)
+           ON CONFLICT(identity_digest) DO UPDATE SET deleted_at=excluded.deleted_at""",
+        (_identity_digest(video), time.time()),
+    )
+    connection.execute("DELETE FROM videos WHERE id=?", (video["id"],))
+
+
+def deleted_after_submission(connection, video, submitted_at):
+    return connection.execute(
+        "SELECT 1 FROM video_deletions WHERE identity_digest=? AND deleted_at>=?",
+        (_identity_digest(video), submitted_at),
+    ).fetchone() is not None
+
+
 def update_video(connection, video_id, group_id, title):
     video = video_row(connection, video_id)
     if group_id is not None:
@@ -191,6 +219,17 @@ def reorder_course(connection, course_id, video_ids):
     existing = {row["id"] for row in course_members(connection, course_id)}
     if len(video_ids) != len(existing) or set(video_ids) != existing:
         raise StudyProblem("课程的视频已变化，请刷新后再调整顺序", 409, "course_changed")
+    _write_course_order(connection, course_id, video_ids)
+
+
+def compact_course_order(connection, course_id):
+    rows = connection.execute(
+        "SELECT video_id FROM membership WHERE course_id=? ORDER BY position, video_id", (course_id,),
+    )
+    _write_course_order(connection, course_id, [row["video_id"] for row in rows])
+
+
+def _write_course_order(connection, course_id, video_ids):
     connection.executemany(
         "UPDATE membership SET position=? WHERE course_id=? AND video_id=?",
         [(position, course_id, video_id) for position, video_id in enumerate(video_ids)],
@@ -208,9 +247,11 @@ def active_chunks(connection, scope, scope_id):
         where, params = "WHERE v.id=?", (scope_id,)
     elif scope == "course":
         course_row(connection, scope_id)
-        membership = "JOIN membership m ON m.video_id=v.id"
-        where = "WHERE m.course_id=?"
-        position = "m.position+1"
+        membership = """JOIN (
+            SELECT video_id, ROW_NUMBER() OVER (ORDER BY position, video_id) AS lesson_number
+            FROM membership WHERE course_id=?
+        ) m ON m.video_id=v.id"""
+        position = "m.lesson_number"
         params = (scope_id,)
     return connection.execute(
         f"""SELECT ch.id, ch.source_id, ch.start_time, ch.end_time, ch.text,

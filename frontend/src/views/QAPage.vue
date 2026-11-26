@@ -9,6 +9,7 @@
         </div>
       </div>
       <div v-if="context || index.videos.length || index.courses.length" class="qa-toolbar-actions">
+        <AIProviderSelect v-model="provider" :disabled="busy || loading" />
         <label v-if="index.videos.length || index.courses.length" class="qa-scope-select">
           <span class="sr-only">切换问答范围</span>
           <select :value="scopeSelection" :disabled="sending || loading" @change="changeScope($event.target.value)">
@@ -204,8 +205,10 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { askQuestion } from '../api/index.js'
+import AIProviderSelect from '../components/AIProviderSelect.vue'
 import AnalysisOutline from '../components/AnalysisOutline.vue'
 import StudySources from '../components/StudySources.vue'
+import { useAIProvider } from '../composables/useAIProvider.js'
 import { useStudyQuestions } from '../composables/useStudyQuestions.js'
 import {
   analysisTaskLink, canRetryTask, conversationLink, isTaskActive, studyChatLink, taskStates, videoAnalysisLink,
@@ -213,6 +216,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const provider = useAIProvider()
 const {
   index, context, conversation, history, includeAll, course, lectureId, analysis: analysisData,
   lectureLoading, lectureError, loading, error, active, loadLecture, send, changeTask, removeConversation,
@@ -229,6 +233,7 @@ const sending = ref(false)
 const sendError = ref('')
 const taskError = ref(null)
 let localTurnId = 0
+let temporarySessionId
 
 const scopeLabel = computed(() => ({
   video: '视频问答', temporary: '视频问答 · 临时分析', course: '课程问答', library: '全库问答',
@@ -272,6 +277,7 @@ const suggestions = computed(() => {
 
 watch(context, () => {
   localTurns.value = []
+  temporarySessionId = undefined
   questionInput.value = ''
   sendError.value = ''
   taskError.value = null
@@ -335,7 +341,7 @@ async function handleSend() {
   sendError.value = ''
   try {
     if (route.query.turn) await router.replace(conversationLink(conversation.value.id))
-    await send(question, recall.value)
+    await send(question, recall.value, provider.value)
     if (context.value === selected) questionInput.value = ''
   } catch (err) {
     if (context.value === selected) sendError.value = err.message
@@ -359,7 +365,10 @@ async function answerTemporary(question, retryId) {
   sending.value = true
   try {
     const subtitles = data.subtitle_text ?? data.subtitle_segments.map(segment => segment.text).join(' ')
-    const result = await askQuestion(question, subtitles, analysisSummary(data), previous)
+    temporarySessionId ??= crypto.randomUUID()
+    const result = await askQuestion(question, subtitles, analysisSummary(data), previous, {
+      provider: provider.value, sessionId: temporarySessionId,
+    })
     entry.answer = result.answer
   } catch (err) {
     entry.error = err.message || '问答请求失败，请重试'

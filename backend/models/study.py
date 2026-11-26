@@ -5,7 +5,7 @@ import unicodedata
 
 from pydantic import BaseModel, Field, SecretStr, StringConstraints, model_validator
 
-from models.schemas import ParseRequest
+from models.schemas import AIProviderId, AnalyzeVideoRequest
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
@@ -35,7 +35,7 @@ class CourseOrder(BaseModel):
     video_ids: list[Identifier] = Field(max_length=1000)
 
 
-class StudyAnalysisRequest(ParseRequest):
+class StudyAnalysisRequest(AnalyzeVideoRequest):
     url: str = Field(max_length=4096)
     request_id: Identifier
     title: Optional[str] = Field(default=None, max_length=240)
@@ -64,6 +64,7 @@ class StudyQuestion(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     request_id: Identifier
     recall: bool = True
+    provider: Optional[AIProviderId] = None
 
 
 class WikiPageInput(BaseModel):
