@@ -128,8 +128,8 @@ Magical-Video/
 
 ### Prerequisites
 
-- Python 3.10 or later
-- Node.js 18 or later
+- Python 3.12 or 3.13
+- Node.js 22.12 or later
 - ffmpeg (recommended; yt-dlp uses it for merging video and audio streams)
 - An API key for at least one AI provider to use analysis and Q&A
 - yt-dlp (installed automatically via pip)
@@ -140,23 +140,23 @@ Magical-Video/
 ```bash
 cd backend
 python3 -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env              # First-time setup. Add the selected provider's API key.
 uvicorn main:app --reload --port 8000
 ```
 
-The API server starts at `http://localhost:8000`. FastAPI provides a built-in Swagger UI at `http://localhost:8000/docs` where you can browse and test all API endpoints.
+The local API listens at `http://127.0.0.1:8000`. Application endpoints use the session cookie issued at sign-in.
 
 ### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev                       # Dev server at http://localhost:5173
+npm run dev                       # Dev server at http://127.0.0.1:5173
 ```
 
-The Vite dev server proxies `/api` requests to `localhost:8000` automatically.
+Vite proxies `/api` requests to the local backend. Open `http://127.0.0.1:5173` and choose **Log in → Register** to create a username and password. Set `SITE_ORIGIN` to match the browser address when using a custom host or port. [Local setup and registration](./docs/长期记忆与课程Wiki-本地开发计划.md#本地运行)
 
 ### 🐳 Docker Deployment
 
@@ -202,7 +202,9 @@ Edit `backend/.env` and fill in:
 ```bash
 DEEPSEEK_API_KEY=sk-your-key-here       # Example. OPENAI_API_KEY or OPENCODE_GO_API_KEY also works.
 # YTDLP_PROXY=http://proxy.example.net:7890 # Optional proxy reachable from the backend container
-ALLOWED_ORIGINS=https://your-domain.com # Optional — CORS whitelist in production
+SITE_ORIGIN=https://your-domain.com
+AUTH_AI_ACCOUNT_DAILY=30
+AUTH_AI_SITE_DAILY=300
 ```
 
 ```bash
@@ -217,7 +219,7 @@ docker compose ps
 curl -fsS http://127.0.0.1:8080/api/health
 ```
 
-Open [http://localhost:8080](http://localhost:8080) on the Docker host. For access from another device, use the HTTPS domain configured below.
+Use the HTTPS address configured in `SITE_ORIGIN` to sign in. The loopback port serves the host proxy and health checks. Back up the Compose data volume before upgrading. [Account deployment and recovery](./docs/长期记忆与课程Wiki-服务器部署计划.md)
 
 #### Managing the Application
 
@@ -423,7 +425,8 @@ YouTube share links such as `youtu.be/hwP7WQkmECE` work without `https://`. Clea
 | `OPENAI_MODEL` | No | Responses API model ID. Defaults to `gpt-5.4-mini` |
 | `OPENCODE_GO_MODEL` | No | Go model ID. Defaults to `deepseek-v4.1-flash` |
 | `YTDLP_PROXY` | No | HTTP or SOCKS5 proxy for YouTube access |
-| `ALLOWED_ORIGINS` | No | CORS allowed origins (comma-separated). Default: `*` (all origins in dev). Set to your domain(s) in production |
+| `SITE_ORIGIN` | Production | Site origin for sign-in and write requests. Defaults to `http://127.0.0.1:5173` in development |
+| `AUTH_AI_ACCOUNT_DAILY`, `AUTH_AI_SITE_DAILY` | Production | Daily upstream AI request limits per account and for the entire site |
 | `YTDLP_NO_CHECK_CERTIFICATES` | No | Skip SSL cert verification for yt-dlp. Default: `false`. Only set to `true` in regions with SSL interference |
 
 On first setup, copy `backend/.env.example` to `backend/.env`. Add your API keys and restart the backend. Select a configured model on the analysis or Q&A page. The default is the first configured provider in this order, DeepSeek, OpenAI, then OpenCode Go. The analysis and Q&A pages share the browser’s last model selection. Course Wikis use the model recorded for the source analysis.
@@ -439,7 +442,7 @@ OpenCode Go's chat inference is designed for coding agents. Its DeepSeek models 
 This release focuses on security hardening, reliability improvements, and production deployment.
 
 **🔴 Security (P0)**:
-- **CORS whitelist**: `ALLOWED_ORIGINS` env var controls allowed origins. Default `*` for dev; set specific domain(s) in production.
+- Application APIs use site sign-in. Write requests are checked against `SITE_ORIGIN`, and personal libraries and downloads are scoped to the signed-in account.
 - **Rate limiting**: Added `slowapi` with per-endpoint IP-based rate limits. `/api/analyze-stream` 5/min, `/api/download` 3/min, `/api/ask` 10/min, `/api/parse` 20/min, `/api/thumbnail` 30/min.
 - **SSL certificate verification**: yt-dlp SSL verification now enabled by default. Controlled via `YTDLP_NO_CHECK_CERTIFICATES` env var (default `false`).
 - **nginx Basic Auth**: Server-level password protection for the entire site.

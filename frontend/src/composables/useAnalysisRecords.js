@@ -74,8 +74,20 @@ export function useAnalysisRecords() {
     loadRecent()
   }
 
+  async function archiveRecord(id, privateConsent) {
+    const saved = await studyApi.archiveAnalysis(id, privateConsent)
+    if (taskId.value === id) {
+      task.value = saved
+      loadError.value = ''
+    }
+    if (recent.value.length || loadingRecent.value) {
+      recent.value = recent.value.map(item => item.id === id ? saved : item)
+      loadRecent()
+    }
+  }
+
   return {
     taskId, videoId, task, video, loading, loadError, readSelection,
-    recent, loadingRecent, recentError, loadRecent, removeRecent,
+    recent, loadingRecent, recentError, loadRecent, removeRecent, archiveRecord,
   }
 }

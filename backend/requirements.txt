@@ -12,3 +12,4 @@ limits>=5.0
 tenacity>=8.0
 numpy>=1.26,<3
 fastembed==0.9.1
+argon2-cffi>=25.1.0

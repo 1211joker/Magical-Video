@@ -10,10 +10,10 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx
-from fastapi.testclient import TestClient
+from auth_support import account_client
 
 from main import app
 from models.schemas import AnalysisResult
@@ -106,10 +106,9 @@ class StudyTests(unittest.TestCase):
 
     @contextmanager
     def client(self):
-        with TestClient(app, base_url="http://127.0.0.1", client=("127.0.0.1", 55000)) as client:
-            response = client.post(PREFIX + "/session", headers={"X-Study-Client": "1"})
-            self.assertEqual(response.status_code, 200, response.text)
-            client.headers["X-Study-Token"] = response.json()["token"]
+        with account_client(self.data) as client:
+            self.account_id = client.get("/api/auth/session").json()["id"]
+            self.library_path = self.data / "users" / self.account_id / "library.sqlite3"
             yield client
 
     def wait_for_phase(self, client, job_id, phase):
@@ -191,6 +190,43 @@ class StudyTests(unittest.TestCase):
             ids = [video["id"] for video in client.get(route).json()["videos"]]
             self.assertEqual(ids, [part_two["id"], part_one["id"]])
 
+    def test_reanalysis_keeps_task_results_while_reusing_subtitles(self):
+        async def by_provider(_text, title, provider, **_options):
+            return AnalysisResult(title=title, overview=f"{provider.id} 生成的摘要")
+
+        self.analyze.side_effect = by_provider
+        with self.client() as client:
+            old_id = self.submit(client, provider="deepseek").json()["id"]
+            original = self.wait(client, old_id)
+            database = app.state.study.services[self.account_id].database
+            # 旧版本只记录字幕版本的 ID。
+            with database.transaction(write=True) as connection:
+                connection.execute("UPDATE jobs SET result=json_remove(result, '$.analysis') WHERE id=?", (old_id,))
+            self.assertEqual(client.get(f"{PREFIX}/tasks/{old_id}").json(), original)
+
+            temporary_id = self.submit(client, save=False, provider="openai").json()["id"]
+            temporary = self.wait(client, temporary_id)
+            response = client.put(f"{PREFIX}/analysis/{temporary_id}/archive", json={})
+            self.assertEqual(response.status_code, 200, response.text)
+            archived = response.json()
+            self.assertEqual(archived["result"]["analysis"], temporary["result"]["analysis"])
+
+            newest_id = self.submit(client, provider="opencode-go").json()["id"]
+            newest = self.wait(client, newest_id)
+            video_id = newest["result"]["id"]
+            self.assertEqual(client.get(f"{PREFIX}/videos/{video_id}").json(), newest["result"])
+
+        with self.client() as client:
+            for expected in (original, archived, newest):
+                with self.subTest(provider=expected["provider"]):
+                    task = client.get(f"{PREFIX}/tasks/{expected['id']}").json()
+                    self.assertEqual(task["result"]["analysis"], expected["result"]["analysis"])
+                    self.assertEqual(task["result"]["subtitle_segments"], expected["result"]["subtitle_segments"])
+                    self.assertEqual(task["provider"], task["result"]["analysis"]["provider"])
+                    self.assertEqual(task["result"]["id"], video_id)
+                    self.assertEqual(task["result"]["source_id"], newest["result"]["source_id"])
+        self.assertEqual(self.analyze.await_count, 3)
+
     def test_private_opt_in_temporary_expiry_and_redacted_validation(self):
         with self.client() as client:
             rejected = self.submit(client, PANO, panopto_session=SECRET)
@@ -203,10 +239,57 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(client.get(PREFIX + "/library").json()["videos"], [])
             with patch("services.study_jobs.time.time", return_value=time.time() + TEMPORARY_TTL + 1):
                 self.assertEqual(client.get(f"{PREFIX}/tasks/{temporary['id']}").status_code, 404)
+                self.assertEqual(client.put(f"{PREFIX}/analysis/{temporary['id']}/archive", json={}).status_code, 404)
             saved = self.submit(client, PANO + "&token=" + SECRET, panopto_session=SECRET, private_consent=True).json()
             self.assertTrue(self.wait(client, saved["id"])["result"]["private"])
-            self.assertFalse(app.state.study.jobs.credentials)
-        for path in self.data.glob("library.sqlite3*"):
+            self.assertFalse(app.state.study.services[self.account_id].jobs.credentials)
+        for path in self.library_path.parent.glob("library.sqlite3*"):
+            self.assertNotIn(SECRET.encode(), path.read_bytes())
+
+    def test_archive_completed_temporary_analysis_reuses_result_and_keeps_task(self):
+        with self.client() as client:
+            job_id = self.submit(client, save=False).json()["id"]
+            temporary = self.wait(client, job_id)
+            self.assertFalse(temporary["persistent"])
+            self.assertEqual(client.get(PREFIX + "/library").json()["videos"], [])
+
+            route = f"{PREFIX}/analysis/{job_id}/archive"
+            response = client.put(route, json={})
+            self.assertEqual(response.status_code, 200, response.text)
+            saved = response.json()
+            self.assertEqual(saved["id"], job_id)
+            self.assertTrue(saved["persistent"])
+            for field in ("analysis", "subtitle_segments"):
+                self.assertEqual(saved["result"][field], temporary["result"][field])
+            self.assertEqual(client.put(route, json={}).json(), saved)
+            self.assertNotIn(job_id, app.state.study.services[self.account_id].jobs.temporary)
+
+        with self.client() as client:
+            self.assertEqual(client.get(f"{PREFIX}/tasks/{job_id}").json(), saved)
+            replay = self.submit(client, request_id=job_id, save=False)
+            self.assertEqual(replay.status_code, 202, replay.text)
+            self.assertEqual(replay.json()["id"], job_id)
+            self.assertEqual(self.submit(client, request_id=job_id).json()["code"], "request_conflict")
+            videos = client.get(PREFIX + "/library").json()["videos"]
+            self.assertEqual([video["id"] for video in videos], [saved["result"]["id"]])
+        self.open.assert_awaited_once()
+        self.analyze.assert_awaited_once()
+
+    def test_archive_private_temporary_analysis_requires_consent(self):
+        with self.client() as client:
+            job_id = self.submit(client, PANO, save=False, panopto_session=SECRET).json()["id"]
+            self.wait(client, job_id)
+            route = f"{PREFIX}/analysis/{job_id}/archive"
+            rejected = client.put(route, json={})
+            self.assertEqual(rejected.status_code, 400)
+            self.assertEqual(rejected.json()["code"], "private_consent")
+            self.assertFalse(client.get(f"{PREFIX}/tasks/{job_id}").json()["persistent"])
+            self.assertEqual(client.get(PREFIX + "/library").json()["videos"], [])
+
+            response = client.put(route, json={"private_consent": True})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["result"]["private"])
+        for path in self.library_path.parent.glob("library.sqlite3*"):
             self.assertNotIn(SECRET.encode(), path.read_bytes())
 
     def test_public_panopto_can_be_analyzed_without_a_session(self):
@@ -277,7 +360,7 @@ class StudyTests(unittest.TestCase):
             ("opencode.ai", 2800), ("opencode.ai", 2800), ("api.deepseek.com", 10000),
         ])
         self.assertEqual({request.headers["x-opencode-session"] for request, limit in requests if limit == 2800},
-                         {f"ses_{conversation}"})
+                         {f"ses_{uuid5(UUID(self.account_id), conversation).hex}"})
 
     def test_video_group_and_title_survive_reanalysis_and_restart(self):
         groups_url = PREFIX + "/groups"
@@ -328,7 +411,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(client.delete(f"{PREFIX}/analysis/{wiki_task}").status_code, 404)
             record_url = f"{PREFIX}/analysis/{task_id}"
             self.assertEqual(client.delete(record_url).status_code, 204)
-            self.assertEqual(client.delete(record_url).status_code, 204)
+            self.assertEqual(client.delete(record_url).status_code, 404)
             self.assertEqual(client.get(f"{PREFIX}/tasks/{task_id}").status_code, 404)
             self.assertEqual(client.get(PREFIX + "/tasks?kind=analysis").json(), [])
             self.assertEqual(client.get(f"{PREFIX}/videos/{video['id']}").json(), video)
@@ -575,23 +658,7 @@ class StudyTests(unittest.TestCase):
             self.assertEqual(client.post(path, json={}).status_code, 401)
             self.assertEqual(client.post(path, json={"panopto_session": SECRET}).status_code, 202)
             self.wait(client, job_id)
-        self.assertNotIn(SECRET.encode(), (self.data / "library.sqlite3").read_bytes())
-
-    def test_loopback_boundary(self):
-        with self.client() as client:
-            original = client.headers["X-Study-Token"]
-            blocked = client.get(PREFIX + "/library", headers={"Origin": "https://example.invalid"})
-            self.assertEqual(blocked.status_code, 403)
-            self.assertEqual(blocked.headers["Cache-Control"], "no-store")
-            self.assertEqual(client.get(PREFIX + "/library", headers={"Sec-Fetch-Site": "same-site"}).status_code, 403)
-            self.assertEqual(client.get(PREFIX + "/library", headers={"Sec-Fetch-Site": "same-origin"}).status_code, 200)
-            self.assertEqual(client.get(PREFIX + "/library", headers={"X-Study-Token": ""}).status_code, 401)
-            self.assertEqual(client.post(PREFIX + "/session").status_code, 403)
-            self.assertEqual(client.post(PREFIX + "/session", headers={
-                "X-Study-Client": "1", "Sec-Fetch-Site": "cross-site",
-            }).status_code, 403)
-        with self.client() as client:
-            self.assertEqual(client.get(PREFIX + "/library", headers={"X-Study-Token": original}).status_code, 401)
+        self.assertNotIn(SECRET.encode(), self.library_path.read_bytes())
 
 
 async def _wait_forever(*args, **kwargs):

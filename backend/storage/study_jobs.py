@@ -49,9 +49,10 @@ def read_job(connection, job_id):
 
 def insert_job(connection, job):
     connection.execute(
-        """INSERT INTO jobs(id, kind, state, phase, label, payload, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (job.id, job.kind, job.state, job.phase, job.label, pack(job.payload), job.created_at, job.updated_at),
+        """INSERT INTO jobs(id, kind, state, phase, label, payload, result, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (job.id, job.kind, job.state, job.phase, job.label, pack(job.payload),
+         pack(job.result) if job.result is not None else None, job.created_at, job.updated_at),
     )
 
 
@@ -68,6 +69,16 @@ def update_job(connection, job):
 
 def delete_job(connection, job):
     connection.execute("DELETE FROM jobs WHERE id=? AND created_at=?", (job.id, job.created_at))
+
+
+def snapshot_legacy_analyses(connection, source_id, analysis_json):
+    """保留旧任务最后可读的结果，随后字幕版本可继续更新当前分析。"""
+    connection.execute(
+        """UPDATE jobs SET result=json_set(result, '$.analysis', json(?))
+           WHERE kind='analysis' AND state='done'
+             AND json_extract(result, '$.source_id')=? AND json_type(result, '$.analysis') IS NULL""",
+        (analysis_json, source_id),
+    )
 
 
 def delete_video_analyses(connection, video):

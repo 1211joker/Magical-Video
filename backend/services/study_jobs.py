@@ -14,45 +14,33 @@ JOB_PRIORITY = {"question": 0, "analysis": 1, "wiki": 2}
 
 
 class LocalStudyJobs:
-    def __init__(self, database, run_job):
+    def __init__(self, database, run_job, notify):
         self.database = database
         self.run_job = run_job
+        self.notify = notify
         self.temporary = {}
         self.credentials = {}
-        self.changed = asyncio.Event()
-        self.worker = None
         self.active = None
         self.active_id = None
-        self.closing = False
 
-    def start(self):
+    def recover(self):
         with self.database.transaction(write=True) as connection:
             store.recover_jobs(connection)
-        self.worker = asyncio.create_task(self._work())
-
-    async def close(self):
-        self.closing = True
-        self.changed.set()
-        if self.active:
-            self.active.cancel()
-        if self.worker:
-            await self.worker
-        self.credentials.clear()
-        self.temporary.clear()
 
     def submit(self, job, credentials=None):
-        self._prune()
+        self.prune()
         with self.database.transaction(write=True) as connection:
             existing = self.temporary.get(job.id) or store.read_job(connection, job.id)
             if existing:
                 # 旧任务允许缺少后来加入的模型和平台鉴权信息。
                 payload = {**existing.payload}
                 requested = {**job.payload}
+                original_save = payload.pop("save_at_submission", existing.persistent)
                 payload.pop("requires_session", None)
                 requested.pop("requires_session", None)
                 if "provider" in requested:
                     payload.setdefault("provider", requested["provider"])
-                if (existing.kind, payload, existing.persistent) != (job.kind, requested, job.persistent):
+                if (existing.kind, payload, original_save) != (job.kind, requested, job.persistent):
                     raise StudyProblem("请求编号已经用于另一个任务", 409, "request_conflict")
                 return existing
             count = connection.execute(
@@ -73,11 +61,11 @@ class LocalStudyJobs:
             else:
                 self.temporary[job.id] = job
         self._set_credentials(job, credentials)
-        self.changed.set()
+        self.notify()
         return job
 
     def get(self, job_id):
-        self._prune()
+        self.prune()
         with self.database.transaction() as connection:
             job = self.temporary.get(job_id) or store.read_job(connection, job_id)
         if not job:
@@ -85,7 +73,7 @@ class LocalStudyJobs:
         return job
 
     def list(self, conversation_id=None, *, kind=None):
-        self._prune()
+        self.prune()
         with self.database.transaction() as connection:
             jobs = store.recent_jobs(connection, conversation_id=conversation_id, kind=kind)
         if conversation_id is None:
@@ -102,7 +90,7 @@ class LocalStudyJobs:
         self._set_credentials(job, credentials)
         job.state, job.phase, job.detail, job.code = "queued", "queued", None, None
         self._save(job)
-        self.changed.set()
+        self.notify()
         return job
 
     def cancel(self, job):
@@ -116,12 +104,7 @@ class LocalStudyJobs:
         return job
 
     def delete_analysis(self, job_id):
-        try:
-            job = self.get(job_id)
-        except StudyProblem as error:
-            if error.code == "job_not_found":
-                return
-            raise
+        job = self.get(job_id)
         if job.kind != "analysis":
             raise StudyProblem("没有这条解析记录", 404, "analysis_not_found")
         if job.persistent:
@@ -144,7 +127,7 @@ class LocalStudyJobs:
             job.state = "queued"
         self._save(job)
         if requeue:
-            self.changed.set()
+            self.notify()
 
     def complete(self, job, result=None, *, commit=None):
         finished = replace(job, state="done", phase="done", checkpoint=None, detail=None, code=None,
@@ -162,6 +145,15 @@ class LocalStudyJobs:
             finished.result = result
             self.temporary[job.id] = finished
 
+    def persist_completed(self, job, commit):
+        with self.database.transaction(write=True) as connection:
+            payload = {**job.payload, "save_at_submission": job.persistent}
+            saved = replace(job, persistent=True, payload=payload, result=commit(connection), updated_at=time.time())
+            store.insert_job(connection, saved)
+        # 事务失败时保留内存结果，允许用户重试。
+        self.temporary.pop(job.id, None)
+        self.notify()
+
     def _save(self, job):
         job.updated_at = time.time()
         # Temporary jobs already change in place. A removed job must stay out of the queue.
@@ -173,7 +165,7 @@ class LocalStudyJobs:
         if credentials:
             self.credentials[job.id] = credentials
 
-    def _prune(self):
+    def prune(self):
         cutoff = time.time() - TEMPORARY_TTL
         for job in list(self.temporary.values()):
             if job.state not in {"queued", "running"} and job.updated_at < cutoff:
@@ -197,27 +189,23 @@ class LocalStudyJobs:
                 store.update_job(connection, job)
             return job
 
-    async def _work(self):
-        while not self.closing:
-            self._prune()
-            self.changed.clear()
-            job = self._take()
-            if job is None:
-                try:
-                    await asyncio.wait_for(self.changed.wait(), timeout=30)
-                except asyncio.TimeoutError:
-                    pass
-                continue
-            self.active_id = job.id
-            self.active = asyncio.create_task(self._execute(job, self.credentials.pop(job.id, {})))
-            try:
-                await self.active
-            except asyncio.CancelledError:
-                if self.closing:
-                    break
-            finally:
-                self.active = None
-                self.active_id = None
+    async def run_next(self):
+        self.prune()
+        job = self._take()
+        if job is None:
+            return False
+        self.active_id = job.id
+        self.active = asyncio.create_task(self._execute(job, self.credentials.pop(job.id, {})))
+        try:
+            await self.active
+        except asyncio.CancelledError:
+            # 单条任务的取消只终止它自己的执行，服务退出才终止调度。
+            if asyncio.current_task().cancelling():
+                raise
+        finally:
+            self.active = None
+            self.active_id = None
+        return True
 
     async def _execute(self, job, credentials):
         try:

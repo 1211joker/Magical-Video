@@ -20,6 +20,10 @@ const PANOPTO = {
 // B站会话随当前标签页使用，切换路由时可继续用于获取视频和字幕。
 const bilibiliSession = shallowRef()
 
+export function clearVideoSessions() {
+  bilibiliSession.value = undefined
+}
+
 export function useVideoSessions() {
   const panoptoSession = shallowRef()
   const sessionRef = site => site.platform === BILIBILI.platform ? bilibiliSession : panoptoSession
@@ -36,13 +40,7 @@ export function useVideoSessions() {
     sessionRef(site).value = undefined
   }
 
-  function restoreLegacyBilibiliSession(cookies) {
-    if (typeof cookies === 'string' && cookies && !bilibiliSession.value) {
-      bilibiliSession.value = { cookies }
-    }
-  }
-
-  return { getSession, connectSession, clearSession, restoreLegacyBilibiliSession }
+  return { getSession, connectSession, clearSession }
 }
 
 export function sessionSiteFor(input) {

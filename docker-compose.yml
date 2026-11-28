@@ -8,9 +8,15 @@ services:
       context: .
       dockerfile: Dockerfile
     env_file:
-      - backend/.env
+      - ${BACKEND_ENV_FILE:-backend/.env}
     environment:
+      APP_ENV: production
       FORWARDED_ALLOW_IPS: *nginx-ip
+      STUDY_DATA_DIR: /data
+      STUDY_MODEL_DIR: /model-cache
+    volumes:
+      - app-data:/data
+      - model-cache:/model-cache
     restart: unless-stopped
     # 不暴露端口到宿主机 — 仅 nginx 可访问
     expose:
@@ -22,7 +28,7 @@ services:
       dockerfile: Dockerfile.nginx
     # 仅监听本地回环 — 由宝塔 nginx 反向代理接入
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:${MAGICAL_HTTP_PORT:-8080}:80"
     networks:
       default:
         ipv4_address: *nginx-ip
@@ -38,3 +44,7 @@ networks:
           # 动态地址池避开上面为 nginx 保留的静态地址。
           ip_range: 172.30.248.4/30
           gateway: 172.30.248.1
+
+volumes:
+  app-data:
+  model-cache:

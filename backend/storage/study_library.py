@@ -5,6 +5,7 @@ import json
 import time
 
 from models.study import normalized_text
+from storage import study_jobs as job_store
 from storage.study_db import StudyProblem, index_document, new_id, pack, require_row
 
 VIDEO_PREFERENCES = "LEFT JOIN video_preferences vp ON vp.video_id=v.id"
@@ -39,15 +40,18 @@ def archive_video(connection, video, segments, chunks, analysis):
     serialized = pack(segments)
     digest = sha256(serialized.encode("utf-8")).hexdigest()
     source = connection.execute(
-        "SELECT id FROM sources WHERE video_id=? AND digest=?", (video_id, digest),
+        "SELECT id, analysis FROM sources WHERE video_id=? AND digest=?", (video_id, digest),
     ).fetchone()
     source_id = source["id"] if source else new_id()
+    analysis_json = pack(analysis)
     if source:
-        connection.execute("UPDATE sources SET analysis=? WHERE id=?", (pack(analysis), source_id))
+        if source["analysis"] != analysis_json:
+            job_store.snapshot_legacy_analyses(connection, source_id, source["analysis"])
+            connection.execute("UPDATE sources SET analysis=? WHERE id=?", (analysis_json, source_id))
     else:
         connection.execute(
             "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
-            (source_id, video_id, digest, serialized, pack(analysis)),
+            (source_id, video_id, digest, serialized, analysis_json),
         )
         for position, chunk in enumerate(chunks):
             chunk_id = new_id()
@@ -217,7 +221,10 @@ def add_member(connection, course_id, video_id):
 
 def reorder_course(connection, course_id, video_ids):
     existing = {row["id"] for row in course_members(connection, course_id)}
-    if len(video_ids) != len(existing) or set(video_ids) != existing:
+    requested = set(video_ids)
+    if len(video_ids) != len(existing) or requested != existing:
+        for video_id in requested - existing:
+            video_row(connection, video_id)
         raise StudyProblem("课程的视频已变化，请刷新后再调整顺序", 409, "course_changed")
     _write_course_order(connection, course_id, video_ids)
 

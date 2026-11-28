@@ -9,7 +9,7 @@ from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from models.schemas import AnalyzeVideoRequest, ParseRequest, ParseResponse, SubtitleResponse
-from services.ai_client import select_provider
+from services.ai_client import AIServiceError, select_provider
 from services.analysis_service import analyze_subtitles
 from services.panopto_service import PanoptoError
 from services.study_sources import supports_archive
@@ -222,6 +222,9 @@ async def analyze_video_stream(req: AnalyzeVideoRequest, request: Request):
             try:
                 provider = select_provider(req.provider)
                 result = await analyze_subtitles(subtitle_data.plain_text, video_info.title, provider)
+            except AIServiceError as error:
+                yield _sse("analyze", "failed", str(error), code=error.code)
+                return
             except RuntimeError as e:
                 yield _sse("analyze", "failed", str(e))
                 return

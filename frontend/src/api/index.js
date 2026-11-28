@@ -1,9 +1,4 @@
-const API_BASE = '/api'
-
-export async function readApiError(response, fallback) {
-  const detail = await response.json().catch(() => ({}))
-  return Object.assign(new Error(detail.detail || detail.error || fallback), { code: detail.code })
-}
+import { apiFetch, readApiError } from './http.js'
 
 export function videoRequest(url, { cookies, bilibiliSession, panoptoSession } = {}) {
   const body = { url }
@@ -14,7 +9,7 @@ export function videoRequest(url, { cookies, bilibiliSession, panoptoSession } =
 }
 
 export async function getAIProviders(signal) {
-  const response = await fetch(`${API_BASE}/ai/providers`, { signal, cache: 'no-store' })
+  const response = await apiFetch('/ai/providers', { signal })
   if (!response.ok) throw await readApiError(response, '模型列表加载失败')
   return response.json()
 }
@@ -23,7 +18,7 @@ export async function getAIProviders(signal) {
  * 解析视频链接 — 获取元数据（标题、封面、时长等）
  */
 export async function parseVideo(url, credentials) {
-  const res = await fetch(`${API_BASE}/parse`, {
+  const res = await apiFetch('/parse', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(videoRequest(url, credentials))
@@ -35,7 +30,7 @@ export async function parseVideo(url, credentials) {
 }
 
 export async function extractSubtitles(url, credentials, signal) {
-  const response = await fetch(`${API_BASE}/subtitles`, {
+  const response = await apiFetch('/subtitles', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(videoRequest(url, credentials)),
@@ -64,7 +59,7 @@ export async function extractSubtitles(url, credentials, signal) {
 export function startAnalysis(url, credentials, onEvent, onError, provider) {
   const controller = new AbortController()
 
-  fetch(`${API_BASE}/analyze-stream`, {
+  apiFetch('/analyze-stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...videoRequest(url, credentials), provider: provider || undefined }),
@@ -134,7 +129,7 @@ export function startAnalysis(url, credentials, onEvent, onError, provider) {
  *   { answer: string }
  */
 export async function askQuestion(question, subtitleText, analysisSummary, chatHistory = [], { provider, sessionId } = {}) {
-  const res = await fetch(`${API_BASE}/ask`, {
+  const res = await apiFetch('/ask', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -157,9 +152,9 @@ export async function askQuestion(question, subtitleText, analysisSummary, chatH
  */
 export async function prepareDownload(url, formatId, credentials, signal) {
   signal?.throwIfAborted()
-  const jobsUrl = `${API_BASE}/download/jobs`
+  const jobsUrl = '/download/jobs'
   // 先取得任务编号，页面即使在提交期间离开也能取消已创建的任务。
-  const response = await fetch(jobsUrl, {
+  const response = await apiFetch(jobsUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...videoRequest(url, credentials), format_id: formatId }),
@@ -169,7 +164,7 @@ export async function prepareDownload(url, formatId, credentials, signal) {
 
   try {
     while (true) {
-      const statusResponse = await fetch(jobUrl, { cache: 'no-store', signal })
+      const statusResponse = await apiFetch(jobUrl, { signal })
       const status = await readDownloadResponse(statusResponse)
       signal?.throwIfAborted()
       if (status.status === 'ready') return status.download_url
@@ -177,7 +172,7 @@ export async function prepareDownload(url, formatId, credentials, signal) {
     }
   } catch (error) {
     // 取消请求失败时，后端仍会按任务有效期清理。
-    void fetch(jobUrl, { method: 'DELETE', keepalive: true }).catch(() => {})
+    void apiFetch(jobUrl, { method: 'DELETE', keepalive: true }).catch(() => {})
     throw error
   }
 }

@@ -15,9 +15,9 @@ from services.download_service import (
     DownloadJobNotFound,
     DownloadJobs,
     DownloadNotReady,
+    DownloadQueueFull,
     DownloadRedirect,
     PreparedDownload,
-    prepare_download,
 )
 from services.panopto_service import PanoptoError
 from services.video_session import BilibiliSessionError
@@ -41,6 +41,8 @@ def download_errors():
         raise HTTPException(404, "下载任务不存在或已过期，请重新发起下载") from error
     except DownloadNotReady as error:
         raise HTTPException(409, "视频文件还在准备中") from error
+    except DownloadQueueFull as error:
+        raise HTTPException(429, "下载任务较多，请稍后再试") from error
     except (YouTubeNetworkUnavailable, PanoptoError, BilibiliSessionError):
         raise
     except RuntimeError as error:
@@ -85,10 +87,10 @@ def download_response(download: PreparedDownload, release: Optional[Callable[[],
 
 @router.post("/download")
 @download_limit
-async def download_video_endpoint(body: DownloadRequest, request: Request):
+async def download_video_endpoint(body: DownloadRequest, request: Request, jobs: DownloadJobs = Depends(get_download_jobs)):
     """保留直接接收文件的 API。"""
     with download_errors():
-        download = await prepare_download(
+        download = await jobs.prepare(
             body.url,
             body.format_id,
             body.cookies,
@@ -101,33 +103,36 @@ async def download_video_endpoint(body: DownloadRequest, request: Request):
 @router.post("/download/jobs", status_code=202, response_model=DownloadJobStarted)
 @download_limit
 async def start_download_job(body: DownloadRequest, request: Request, jobs: DownloadJobs = Depends(get_download_jobs)):
-    job_id = jobs.start(
-        body.url,
-        body.format_id,
-        body.cookies,
-        panopto_session=body.panopto_session,
-        bilibili_session=body.bilibili_session,
-    )
+    with download_errors():
+        job_id = jobs.start(
+            request.state.user.id,
+            body.url,
+            body.format_id,
+            body.cookies,
+            panopto_session=body.panopto_session,
+            bilibili_session=body.bilibili_session,
+        )
     return DownloadJobStarted(job_id=job_id)
 
 
 @router.get("/download/jobs/{job_id}", response_model=DownloadJobStatus, response_model_exclude_none=True)
 async def get_download_status(job_id: str, request: Request, jobs: DownloadJobs = Depends(get_download_jobs)):
     with download_errors():
-        video = jobs.result(job_id)
+        video = jobs.result(request.state.user.id, job_id)
     if video is None:
         return DownloadJobStatus(status="preparing")
     return DownloadJobStatus(status="ready", download_url=request.url_for("get_download_file", job_id=job_id).path)
 
 
 @router.delete("/download/jobs/{job_id}", status_code=204)
-async def cancel_download_job(job_id: str, jobs: DownloadJobs = Depends(get_download_jobs)):
-    await jobs.discard(job_id)
+async def cancel_download_job(job_id: str, request: Request, jobs: DownloadJobs = Depends(get_download_jobs)):
+    with download_errors():
+        await jobs.discard(request.state.user.id, job_id)
     return Response(status_code=204)
 
 
 @router.get("/download/jobs/{job_id}/file")
-async def get_download_file(job_id: str, jobs: DownloadJobs = Depends(get_download_jobs)):
+async def get_download_file(job_id: str, request: Request, jobs: DownloadJobs = Depends(get_download_jobs)):
     with download_errors():
-        download, release = jobs.acquire(job_id)
+        download, release = jobs.acquire(request.state.user.id, job_id)
     return download_response(download, release)

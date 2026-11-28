@@ -1,6 +1,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { studyApi, studyRequestId } from '../api/study.js'
+import { readAccountState, saveAccountState } from '../accountState.js'
 import {
   analysisContent, confirmTaskRetry, conversationLink, getImmediateResult, isTaskActive, studyChatLink,
   useStudyPolling,
@@ -8,10 +9,6 @@ import {
 
 const RECENT_QUESTION_KEY = 'recentQuestionLocation'
 const emptyIndex = () => ({ videos: [], courses: [] })
-
-function localValue(key) {
-  try { return JSON.parse(localStorage.getItem(key)) } catch { return null }
-}
 
 function immediateAnalysis(temporaryId) {
   const id = temporaryId === '1' ? undefined : temporaryId
@@ -21,7 +18,7 @@ function immediateAnalysis(temporaryId) {
 
 function rememberLocation(query) {
   // 仅保存入口所需的 ID。分析内容和平台会话仍由各自的数据生命周期管理。
-  try { localStorage.setItem(RECENT_QUESTION_KEY, JSON.stringify(query)) } catch { /* 存储不可用 */ }
+  saveAccountState(RECENT_QUESTION_KEY, query)
 }
 
 export function useStudyQuestions() {
@@ -135,7 +132,7 @@ export function useStudyQuestions() {
       const explicit = query.conversation ? await studyApi.conversation(query.conversation) : null
       if (!isCurrent(generation)) return
       if (!query.conversation && !query.scope && !query.task && !query.temporary) {
-        const remembered = localValue(RECENT_QUESTION_KEY)
+        const remembered = readAccountState(RECENT_QUESTION_KEY)
         if (remembered?.conversation || remembered?.scope || remembered?.task || remembered?.temporary) {
           await router.replace({ name: 'qa', query: remembered })
         } else if (immediateAnalysis()) {

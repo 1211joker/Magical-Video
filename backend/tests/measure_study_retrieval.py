@@ -3,8 +3,10 @@
 import argparse
 from dataclasses import dataclass
 
-from services.study_embeddings import LocalEmbeddings, data_directory, model_directory
+from services.study_embeddings import LocalEmbeddings, model_directory
 from services.study_search import follow_up_query, retrieve
+from storage.accounts import AccountsDatabase
+from storage.data_home import data_directory, user_study_directory
 from storage.study_db import StudyDatabase
 
 VIDEO_IDS = {1: "aircAruvnKk", 2: "IHZwWFHWa-w", 3: "Ilg3gGewQ5U"}
@@ -87,9 +89,16 @@ def measure(connection, course_id, encoder):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--course", required=True, help="验收课程 ID，可在课程页地址中查看")
+    parser.add_argument("--username", help="课程所属的用户名。省略时读取旧版单用户资料库")
     args = parser.parse_args()
     directory = data_directory()
-    database = StudyDatabase(directory / "library.sqlite3")
+    library = directory
+    if args.username:
+        owner = AccountsDatabase(directory).id_for_username(args.username)
+        if not owner:
+            raise SystemExit("没有这个账号")
+        library = user_study_directory(directory, owner)
+    database = StudyDatabase(library / "library.sqlite3")
     if not database.path.is_file():
         raise SystemExit("请先使用应用分析并保存三条验收视频")
     encoder = LocalEmbeddings(model_directory(directory))

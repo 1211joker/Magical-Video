@@ -117,6 +117,20 @@
       </div>
     </StudyManagementDialog>
 
+    <StudyManagementDialog v-if="showArchiveConsent" title="保存到资料库" :busy="savingArchive"
+                           @close="showArchiveConsent = false">
+      <div class="study-editor">
+        <p>解析结果和字幕将保存在本机资料库。整理课程 Wiki 或问答时，AI 服务会处理用到的字幕片段。</p>
+        <p v-if="archiveError" class="study-notice" role="alert">{{ archiveError }}</p>
+        <div class="study-actions">
+          <button class="btn-secondary btn-compact" type="button" :disabled="savingArchive"
+                  @click="showArchiveConsent = false">取消</button>
+          <button class="btn-primary btn-compact" type="button" :disabled="savingArchive"
+                  @click="archiveCurrentResult(true)">{{ savingArchive ? '保存中…' : '确认保存' }}</button>
+        </div>
+      </div>
+    </StudyManagementDialog>
+
     <VideoSessionGuide
       v-if="sessionGuide"
       :key="sessionGuide.url"
@@ -286,12 +300,14 @@
           <div class="analysis-record-header card">
             <div>
               <h2 id="analysis-output-title">{{ previewVideo ? '分析结果' : visibleResult.title }}</h2>
-              <p class="platform-note">
+              <p class="platform-note" role="status">
                 {{ resultRecord?.id ? '已保存到资料库' : taskId ? '临时结果 · 完成后保留 1 小时' : '分析完成' }}
                 <template v-if="resultRecord"> · {{ platforms[resultRecord.platform] }} · {{ timecode(resultRecord.duration) }}</template>
               </p>
             </div>
             <div class="analysis-actions">
+              <button v-if="canArchiveResult" class="btn-secondary btn-compact" type="button" :disabled="savingArchive"
+                      @click="archiveCurrentResult()">{{ savingArchive ? '保存中…' : '保存到资料库' }}</button>
               <a v-if="resultRecord?.id" :href="resultRecord.url" target="_blank" rel="noopener noreferrer"
                  class="btn-secondary btn-compact">打开原视频 ↗</a>
               <RouterLink :to="questionLink" class="btn-primary btn-compact">去问答
@@ -301,6 +317,7 @@
               </RouterLink>
             </div>
           </div>
+          <p v-if="archiveError && !showArchiveConsent" class="study-notice" role="alert">{{ archiveError }}</p>
           <AnalysisResult :key="taskId || videoId || parsedVideoUrl" :result="visibleResult" />
         </section>
         <SubtitleViewer
@@ -317,13 +334,14 @@
 <script setup>
 import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { readAccountState, saveAccountState } from '../accountState.js'
 import { extractSubtitles, parseVideo, startAnalysis } from '../api/index.js'
 import { studyApi, studyRequestId } from '../api/study.js'
 import { useAIProvider } from '../composables/useAIProvider.js'
 import { useAnalysisRecords } from '../composables/useAnalysisRecords.js'
 import {
   analysisContent, analysisTaskLink, canRetryTask, confirmTaskRetry, isTaskActive,
-  platforms, restoreImmediateResult, setImmediateResult, studyChatLink, taskPhases, taskStates, timecode, videoAnalysisLink,
+  getImmediateResult, platforms, setImmediateResult, studyChatLink, taskPhases, taskStates, timecode, videoAnalysisLink,
 } from '../studyUi.js'
 import { sessionSiteFor, useVideoSessions } from '../videoSessions.js'
 import VideoInfo from '../components/VideoInfo.vue'
@@ -341,13 +359,16 @@ const router = useRouter()
 const provider = useAIProvider()
 const {
   taskId, videoId, task, video, loading, loadError, readSelection,
-  recent, loadingRecent, recentError, loadRecent, removeRecent,
+  recent, loadingRecent, recentError, loadRecent, removeRecent, archiveRecord,
 } = useAnalysisRecords()
 const recentPanel = ref(null)
 const manageRecent = ref(false)
 const deletingRecent = ref(null)
 const removingRecent = ref(false)
 const removeRecentError = ref('')
+const showArchiveConsent = ref(false)
+const savingArchive = ref(false)
+const archiveError = ref('')
 const parsing = ref(false)
 const videoInfo = ref(null)
 const parsedInput = ref('')
@@ -357,7 +378,7 @@ const parsedVideoUrl = computed(() => parsedInput.value === urlInput.value.trim(
 const errorMsg = ref('')
 const networkIssue = ref(null)
 const sessionGuide = ref(null)
-const { getSession, connectSession: rememberSession, clearSession, restoreLegacyBilibiliSession } = useVideoSessions()
+const { getSession, connectSession: rememberSession, clearSession } = useVideoSessions()
 const inputSite = computed(() => sessionSiteFor(urlInput.value))
 const studyAvailable = ref(false)
 const saveToLibrary = ref(true)
@@ -383,6 +404,8 @@ let studyAttempt = null
 let bilibiliAttempt = null
 const resultRecord = computed(() => task.value?.result ?? video.value)
 const visibleResult = computed(() => taskId.value || videoId.value ? analysisContent(resultRecord.value) : analysisResult.value)
+const canArchiveResult = computed(() =>
+  task.value?.state === 'done' && !task.value.persistent && Boolean(task.value.result))
 const previewVideo = computed(() => {
   if (videoId.value) return null
   if (taskId.value) return submittedTaskId.value === taskId.value ? videoInfo.value : null
@@ -433,49 +456,60 @@ async function confirmRecentRemoval() {
   }
 }
 
-// 状态持久化 — 页面切换后恢复已解析的视频和 AI 分析结果
+async function archiveCurrentResult(privateConsent = false) {
+  if (!canArchiveResult.value || savingArchive.value) return
+  const current = task.value
+  archiveError.value = ''
+  if (current.result.private && !privateConsent) {
+    showArchiveConsent.value = true
+    return
+  }
+  savingArchive.value = true
+  try {
+    await archiveRecord(current.id, privateConsent)
+    if (taskId.value === current.id) showArchiveConsent.value = false
+  } catch (error) {
+    if (taskId.value === current.id) archiveError.value = error.message
+  } finally {
+    savingArchive.value = false
+  }
+}
+
+// 当前账号在同一标签页切换页面时可以恢复公开预览。
 const STATE_KEY = 'analysisPageState'
 
 // 页面挂载时恢复之前的分析状态
 onMounted(() => {
-  try {
-    const saved = localStorage.getItem(STATE_KEY)
-    if (saved) {
-      const { cookies, ...state } = JSON.parse(saved)
-      if (state.urlInput) urlInput.value = state.urlInput
-      if (state.videoInfo) videoInfo.value = state.videoInfo
-      parsedInput.value = state.parsedInput || state.videoInfo?.source_url || state.videoInfo?.webpage_url || ''
-      if (state.analysisResult && parsedVideoUrl.value) {
-        analysisResult.value = state.analysisResult
-        immediateId.value = cookies || privateSource.value
-          ? setImmediateResult(state.analysisResult)
-          : restoreImmediateResult(state.analysisResult, state.immediateId)
-      }
-      if (typeof cookies === 'string' && cookies) {
-        restoreLegacyBilibiliSession(cookies)
-        // 迁移时直接清除已存在的凭证副本，避免被私密资料的保存检查跳过。
-        localStorage.setItem(STATE_KEY, JSON.stringify(state))
-      }
+  const state = readAccountState(STATE_KEY)
+  if (state) {
+    urlInput.value = state.urlInput
+    videoInfo.value = state.videoInfo
+    parsedInput.value = state.parsedInput
+    if (state.immediateId && parsedVideoUrl.value) {
+      analysisResult.value = getImmediateResult(state.immediateId, parsedVideoUrl.value)
+      if (analysisResult.value) immediateId.value = state.immediateId
     }
-  } catch (e) { /* 数据损坏，忽略 */ }
+  }
   studyApi.status().then(() => { studyAvailable.value = true }).catch(() => {})
 })
 
 // 自动保存状态变化
-watch([urlInput, videoInfo, analysisResult, immediateId], saveAnalysisState, { deep: true })
+watch([urlInput, videoInfo, immediateId], saveAnalysisState)
 watch(() => urlInput.value.trim(), () => { sessionGuide.value = null })
 
 function saveAnalysisState() {
   if (privateSource.value || credentialsFor(urlInput.value)) return
-  try {
-    localStorage.setItem(STATE_KEY, JSON.stringify({
-      urlInput: urlInput.value,
-      parsedInput: parsedInput.value,
-      videoInfo: videoInfo.value,
-      analysisResult: analysisResult.value,
-      immediateId: immediateId.value,
-    }))
-  } catch (e) { /* localStorage 可能满了 */ }
+  saveAccountState(STATE_KEY, {
+    urlInput: urlInput.value,
+    parsedInput: parsedInput.value,
+    videoInfo: videoInfo.value,
+    immediateId: immediateId.value,
+  })
+}
+
+function resetImmediateAnalysis() {
+  analysisResult.value = null
+  immediateId.value = ''
 }
 
 watch([parsedVideoUrl, privateSource], ([url, privateVideo]) => {
@@ -491,6 +525,8 @@ watch([parsedVideoUrl, taskId, videoId], () => {
 
 watch([taskId, videoId], () => {
   retryConsent.value = false
+  showArchiveConsent.value = false
+  archiveError.value = ''
   analysisError.value = ''
   sessionGuide.value = null
   networkIssue.value = null
@@ -594,7 +630,7 @@ async function handleParse(url = urlInput.value.trim()) {
   videoInfo.value = null
   parsedInput.value = ''
   privateParsed.value = false
-  analysisResult.value = null
+  resetImmediateAnalysis()
   analysisError.value = ''
   progressSteps.length = 0
 
@@ -757,7 +793,7 @@ function handleImmediateAnalyze() {
   analyzing.value = true
   sessionGuide.value = null
   analysisError.value = ''
-  analysisResult.value = null
+  resetImmediateAnalysis()
   progressSteps.length = 0
 
   progressSteps.push(
@@ -796,7 +832,7 @@ function handleImmediateAnalyze() {
       if (event.status === 'done' && event.result) {
         analyzing.value = false
         analysisResult.value = event.result
-        immediateId.value = setImmediateResult(event.result, { persist: !privateSource.value })
+        immediateId.value = setImmediateResult(event.result, { persist: !privateSource.value, sourceUrl: url })
         abortAnalysis = null
       }
     },

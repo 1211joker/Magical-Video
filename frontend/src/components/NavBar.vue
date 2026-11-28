@@ -13,7 +13,7 @@
       <!-- 导航链接 -->
       <div class="navbar-links">
         <router-link
-          v-for="item in visibleItems"
+          v-for="item in navItems"
           :key="item.path"
           :to="item.path === '/qa' && route.name === 'qa' ? route.fullPath : item.path"
           class="nav-link"
@@ -24,21 +24,45 @@
           <span class="nav-icon" v-html="item.icon"></span>
           <span class="nav-label">{{ item.label }}</span>
         </router-link>
+        <details v-if="currentAccount" class="account-menu">
+          <summary class="nav-link">账户</summary>
+          <div class="card account-panel">
+            <p class="account-username">
+              {{ currentAccount.username }}
+              <small v-if="currentAccount.is_admin" class="account-role">管理员</small>
+            </p>
+            <button type="button" class="btn-secondary" :disabled="signingOut" @click="logout">退出登录</button>
+            <p v-if="logoutError" class="account-error" role="alert">{{ logoutError }}</p>
+          </div>
+        </details>
+        <router-link v-else :to="{ name: 'login' }" class="nav-link">登录</router-link>
       </div>
     </div>
   </nav>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
-import { studyApi } from '../api/study.js'
+import { ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { currentAccount, signOut } from '../composables/useAuth.js'
 
 const route = useRoute()
-const studyAvailable = ref(false)
-onMounted(async () => {
-  try { await studyApi.status(); studyAvailable.value = true } catch { /* 资料库入口限于本地 */ }
-})
+const router = useRouter()
+const signingOut = ref(false)
+const logoutError = ref('')
+
+async function logout() {
+  signingOut.value = true
+  logoutError.value = ''
+  try {
+    await signOut()
+    await router.replace({ name: 'login' })
+  } catch (error) {
+    if (error.name !== 'AbortError') logoutError.value = error.message
+  } finally {
+    signingOut.value = false
+  }
+}
 
 const navItems = [
   {
@@ -62,7 +86,6 @@ const navItems = [
     icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0 0 4h13"/><path d="M8 7h7m-7 4h5"/></svg>',
   },
 ]
-const visibleItems = computed(() => navItems.filter(item => item.path !== '/study' || studyAvailable.value))
 const isActive = path => route.path === path || (path === '/study' && route.path.startsWith('/study/'))
 </script>
 
@@ -170,6 +193,23 @@ const isActive = path => route.path === path || (path === '/study' && route.path
 .nav-label {
   display: inline;
 }
+
+.account-menu { position: relative; }
+.account-menu summary { cursor: pointer; list-style: none; }
+.account-menu summary::-webkit-details-marker { display: none; }
+.account-panel {
+  position: absolute;
+  inset-block-start: calc(100% + 8px);
+  inset-inline-end: 0;
+  width: min(260px, 76vw);
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  box-shadow: var(--shadow-lg);
+}
+.account-username { overflow-wrap: anywhere; }
+.account-role { margin-inline-start: 6px; color: var(--text-secondary); }
+.account-error { color: var(--text-secondary); font-size: 0.88rem; }
 
 /* ===== 响应式 ===== */
 @media (max-width: 1000px) {

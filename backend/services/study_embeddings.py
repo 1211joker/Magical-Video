@@ -6,19 +6,15 @@ import logging
 import os
 from pathlib import Path
 from threading import Lock
+from storage.data_home import data_directory
 
 MODEL = "intfloat/multilingual-e5-small"
 REVISION = "fd1525a9fd15316a2d503bf26ab031a61d056e98"
 MODEL_FILE = "onnx/model.onnx"
 MODEL_FILES = [MODEL_FILE, "config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"]
 DIMENSIONS = 384
-DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / ".study-data"
 logger = logging.getLogger(__name__)
 _registration_lock = Lock()
-
-
-def data_directory():
-    return Path(os.environ.get("STUDY_DATA_DIR", DEFAULT_DATA_DIR)).expanduser().resolve()
 
 
 def model_directory(data_dir):
@@ -82,28 +78,23 @@ class LocalEmbeddings:
             return None
 
 
-async def index_loop(database, encoder):
+async def index_batch(database, encoder):
     """小批量补索引，CPU 推理放在线程里，写入时确认原始文本版本。"""
-    while True:
-        if not await asyncio.to_thread(encoder.load):
-            await asyncio.sleep(5)
-            continue
-        with database.transaction() as connection:
-            pending = connection.execute(
-                "SELECT id, text FROM search_docs WHERE embedding IS NULL ORDER BY id LIMIT 24"
-            ).fetchall()
-        if not pending:
-            await asyncio.sleep(2)
-            continue
-        vectors = await asyncio.to_thread(encoder.vectors, [item["text"] for item in pending])
-        if vectors is None:
-            continue
-        with database.transaction(write=True) as connection:
-            connection.executemany(
-                "UPDATE search_docs SET embedding=? WHERE id=? AND text=? AND embedding IS NULL",
-                [(vector.astype("<f4").tobytes(), row["id"], row["text"]) for row, vector in zip(pending, vectors)],
-            )
-        await asyncio.sleep(0)
+    with database.transaction() as connection:
+        pending = connection.execute(
+            "SELECT id, text FROM search_docs WHERE embedding IS NULL ORDER BY id LIMIT 24"
+        ).fetchall()
+    if not pending:
+        return False
+    vectors = await asyncio.to_thread(encoder.vectors, [item["text"] for item in pending])
+    if vectors is None:
+        return False
+    with database.transaction(write=True) as connection:
+        connection.executemany(
+            "UPDATE search_docs SET embedding=? WHERE id=? AND text=? AND embedding IS NULL",
+            [(vector.astype("<f4").tobytes(), row["id"], row["text"]) for row, vector in zip(pending, vectors)],
+        )
+    return True
 
 
 if __name__ == "__main__":

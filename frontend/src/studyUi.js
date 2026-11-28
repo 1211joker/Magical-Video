@@ -1,4 +1,5 @@
 import { onBeforeUnmount, onMounted } from 'vue'
+import { readAccountState, saveAccountState } from './accountState.js'
 
 export const taskStates = {
   queued: '排队中', running: '处理中', done: '完成', failed: '失败', cancelled: '已取消',
@@ -14,32 +15,28 @@ let immediateResult
 const IMMEDIATE_CACHE = 'lastAnalysisResult'
 
 function readImmediateCache() {
-  try { return JSON.parse(localStorage.getItem(IMMEDIATE_CACHE)) } catch { return null }
+  const saved = readAccountState(IMMEDIATE_CACHE)
+  return saved?.savedAt + 3600_000 > Date.now() ? saved : null
 }
 
-export function setImmediateResult(result, { persist = false, id = crypto.getRandomValues(new Uint32Array(2)).join('-') } = {}) {
-  immediateResult = { id, result, expiresAt: Date.now() + 3600_000 }
-  if (persist) {
-    try {
-      localStorage.setItem(IMMEDIATE_CACHE, JSON.stringify({ ...result, temporaryId: id, savedAt: Date.now() }))
-    } catch { /* 本地存储不可用 */ }
-  }
+export function setImmediateResult(result, { persist = false, id = crypto.randomUUID(), sourceUrl } = {}) {
+  const savedAt = Date.now()
+  immediateResult = { id, result, sourceUrl, expiresAt: savedAt + 3600_000 }
+  if (persist) saveAccountState(IMMEDIATE_CACHE, { ...result, temporaryId: id, sourceUrl, savedAt })
   return id
 }
 
-export function restoreImmediateResult(result, id) {
-  const cached = readImmediateCache()
-  if (!id && cached?.title === result.title && cached.subtitle_text === result.subtitle_text) {
-    id = cached.temporaryId
-  }
-  return setImmediateResult(result, { id, persist: true })
+export function clearImmediateResult() {
+  immediateResult = undefined
 }
 
-export function getImmediateResult(id) {
+export function getImmediateResult(id, sourceUrl) {
   if (immediateResult && immediateResult.expiresAt <= Date.now()) immediateResult = undefined
-  if (immediateResult && (!id || immediateResult.id === id)) return immediateResult.result
+  if (immediateResult && (!id || immediateResult.id === id) && (!sourceUrl || immediateResult.sourceUrl === sourceUrl)) {
+    return immediateResult.result
+  }
   const cached = readImmediateCache()
-  return (!id || cached?.temporaryId === id) ? cached : null
+  return cached && (!id || cached.temporaryId === id) && (!sourceUrl || cached.sourceUrl === sourceUrl) ? cached : null
 }
 
 export function timecode(seconds) {

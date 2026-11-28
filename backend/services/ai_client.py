@@ -1,8 +1,11 @@
 """AI 服务的配置选择、请求和响应转换。"""
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import partial
 import json
 from typing import Optional
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -58,10 +61,23 @@ PROVIDERS = {
 
 
 class AIServiceError(RuntimeError):
-    def __init__(self, status_code: int, message: str, *, outcome_unknown: bool = False):
+    def __init__(self, status_code: int, message: str, *, outcome_unknown: bool = False, code: str = "ai_failed"):
         super().__init__(message)
         self.status_code = status_code
         self.outcome_unknown = outcome_unknown
+        self.code = code
+
+
+_account_ai = ContextVar("account_ai", default=(None, nullcontext))
+
+
+@contextmanager
+def using_account_ai(account_id, reserve):
+    token = _account_ai.set((account_id, partial(reserve, account_id)))
+    try:
+        yield
+    finally:
+        _account_ai.reset(token)
 
 
 def default_provider() -> Optional[AIProvider]:
@@ -100,10 +116,12 @@ def _is_retryable(error: BaseException) -> bool:
 
 
 async def _post_once(endpoint: str, body: dict, headers: dict, timeout: int) -> httpx.Response:
+    _, reserve = _account_ai.get()
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(endpoint, json=body, headers=headers)
-        response.raise_for_status()
-        return response
+        async with reserve():
+            response = await client.post(endpoint, json=body, headers=headers)
+            response.raise_for_status()
+            return response
 
 
 _post = retry(
@@ -172,7 +190,11 @@ async def complete(
             "stream": False,
         }
         if provider.id == "opencode-go":
-            headers["x-opencode-session"] = f"ses_{(session_id or uuid4()).hex}"
+            outbound_id = session_id or uuid4()
+            account_id, _ = _account_ai.get()
+            if account_id:
+                outbound_id = uuid5(UUID(account_id), outbound_id.hex)
+            headers["x-opencode-session"] = f"ses_{outbound_id.hex}"
         if json_object and provider.id == "deepseek":
             body["response_format"] = {"type": "json_object"}
             body["thinking"] = {"type": "disabled"}

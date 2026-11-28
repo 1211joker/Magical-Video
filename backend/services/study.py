@@ -1,8 +1,6 @@
 """本地资料库的应用服务，协调学习资源和后台任务。"""
 
 import asyncio
-from contextlib import suppress
-import os
 import time
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -10,7 +8,6 @@ from services import study_ai, study_search
 from services.ai_client import AIServiceError, default_provider, select_provider
 from services.analysis_service import analyze_subtitles
 from services.panopto_service import PanoptoError
-from services.study_embeddings import LocalEmbeddings, data_directory, index_loop, model_directory
 from services.study_jobs import LocalStudyJobs
 from services.study_sources import archive_identity, normalized_segments, subtitle_chunks, video_link
 from services.video_service import open_video
@@ -27,27 +24,14 @@ WIKI_BATCH_SIZE = 16
 
 
 class StudyService:
-    def __init__(self, directory=None):
-        directory = directory or data_directory()
+    def __init__(self, directory, encoder, notify):
         self.database = StudyDatabase(directory / "library.sqlite3")
-        self.encoder = LocalEmbeddings(
-            model_directory(directory), enabled=os.environ.get("STUDY_SEMANTIC", "1") != "0",
-        )
-        self.jobs = LocalStudyJobs(self.database, self._execute)
-        self.indexer = None
+        self.encoder = encoder
+        self.jobs = LocalStudyJobs(self.database, self._execute, notify)
 
     def start(self):
         self.database.initialize()
-        self.jobs.start()
-        if self.encoder.enabled:
-            self.indexer = asyncio.create_task(index_loop(self.database, self.encoder))
-
-    async def close(self):
-        if self.indexer:
-            self.indexer.cancel()
-            with suppress(asyncio.CancelledError):
-                await self.indexer
-        await self.jobs.close()
+        self.jobs.recover()
 
     def status(self):
         with self.database.transaction() as connection:
@@ -108,7 +92,7 @@ class StudyService:
         with self.database.transaction(write=True) as connection:
             source_id = library.add_member(connection, course_id, video_id)
             job = self._queue_wiki(connection, course_id, video_id, source_id)
-        self.jobs.changed.set()
+        self.jobs.notify()
         return job.brief()
 
     def reorder(self, course_id, video_ids):
@@ -261,8 +245,28 @@ class StudyService:
         result = job.result
         if job.kind == "analysis" and job.state == "done" and job.persistent:
             with self.database.transaction() as connection:
-                result = library.video_detail(connection, result["video_id"], result["source_id"])
+                record = library.video_detail(connection, result["video_id"], result["source_id"])
+            record["analysis"] = result.get("analysis", record["analysis"])
+            result = record
         return {**job.brief(), "target": self._target(job), "result": result}
+
+    def archive_analysis(self, task_id, *, private_consent=False):
+        job = self.jobs.get(task_id)
+        if job.kind != "analysis":
+            raise StudyProblem("没有这条解析记录", 404, "analysis_not_found")
+        if job.state != "done":
+            raise StudyProblem("解析完成后才能保存到资料库", 409, "job_state")
+        if not job.persistent:
+            result = job.result
+            if result["private"] and not private_consent:
+                raise StudyProblem("请确认允许保存及处理这份字幕", 400, "private_consent")
+            platform, external_id, url = video_link(result["url"])
+            video = {key: result[key] for key in ("title", "duration", "private")}
+            video.update(platform=platform, external_id=external_id, url=url)
+            self.jobs.persist_completed(job, lambda connection: self._archive_result(
+                connection, video, result["subtitle_segments"], result["analysis"],
+            ))
+        return self.task(task_id)
 
     def retry_task(self, task_id, body):
         job = self.jobs.get(task_id)
@@ -336,7 +340,7 @@ class StudyService:
         except AIServiceError as error:
             if error.outcome_unknown:
                 raise StudyProblem("AI 请求结果未知，请确认是否重试", 502, "retry_confirmation") from None
-            raise StudyProblem(str(error), error.status_code, "ai_failed") from None
+            raise StudyProblem(str(error), error.status_code, error.code) from None
 
     def _start_ai(self, job):
         provider = select_provider(job.payload.get("provider"))
@@ -403,14 +407,14 @@ class StudyService:
             self.jobs.complete(job, {**info, "analysis": analysis, "subtitle_segments": segments})
             return
 
-        def archive(connection):
-            video_id, source_id = library.archive_video(connection, video, segments, subtitle_chunks(segments), analysis)
-            for course in connection.execute("SELECT course_id FROM membership WHERE video_id=?", (video_id,)).fetchall():
-                self._queue_wiki(connection, course["course_id"], video_id, source_id)
-            return {"video_id": video_id, "source_id": source_id}
+        self.jobs.complete(job, commit=lambda connection: self._archive_result(connection, video, segments, analysis))
+        self.jobs.notify()
 
-        self.jobs.complete(job, commit=archive)
-        self.jobs.changed.set()
+    def _archive_result(self, connection, video, segments, analysis):
+        video_id, source_id = library.archive_video(connection, video, segments, subtitle_chunks(segments), analysis)
+        for course in connection.execute("SELECT course_id FROM membership WHERE video_id=?", (video_id,)).fetchall():
+            self._queue_wiki(connection, course["course_id"], video_id, source_id)
+        return {"video_id": video_id, "source_id": source_id, "analysis": analysis}
 
     async def _wiki(self, job):
         course_id, video_id, source_id = (job.payload[key] for key in ("course_id", "video_id", "source_id"))

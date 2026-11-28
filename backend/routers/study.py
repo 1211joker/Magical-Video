@@ -1,9 +1,6 @@
 """本地资料库的 HTTP 入口。"""
 
-from ipaddress import ip_address
-from secrets import compare_digest
 from typing import Optional
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.exceptions import RequestValidationError
@@ -12,7 +9,7 @@ from fastapi.routing import APIRoute
 
 from models.study import (
     ConversationInput, CourseInput, CourseOrder, Identifier, ScopeKind,
-    StudyAnalysisRequest, StudyQuestion, StudyRetry, StudyTaskKind,
+    StudyAnalysisRequest, StudyArchiveInput, StudyQuestion, StudyRetry, StudyTaskKind,
     VideoGroupInput, VideoLibraryUpdate, WikiLinkInput, WikiPageInput,
 )
 from services.study import StudyService
@@ -30,7 +27,7 @@ class StudyRoute(APIRoute):
             except StudyProblem as error:
                 response = JSONResponse({"detail": error.detail, "code": error.code}, status_code=error.status)
             except AIServiceError as error:
-                response = JSONResponse({"detail": str(error), "code": "ai_unavailable"}, status_code=error.status_code)
+                response = JSONResponse({"detail": str(error), "code": error.code}, status_code=error.status_code)
             except RequestValidationError:
                 response = JSONResponse(
                     {"detail": "请求参数格式无效", "code": "invalid_request"}, status_code=422,
@@ -44,49 +41,11 @@ class StudyRoute(APIRoute):
 router = APIRouter(prefix="/api/study", tags=["study"], route_class=StudyRoute)
 
 
-def _is_loopback(host):
-    if host == "localhost":
-        return True
-    try:
-        address = ip_address(host)
-        return (getattr(address, "ipv4_mapped", None) or address).is_loopback
-    except ValueError:
-        return False
-
-
-def _local_url(value):
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return False
-    return parsed.scheme in {"http", "https"} and parsed.hostname is not None and _is_loopback(parsed.hostname)
-
-
-def get_local_study(request: Request) -> StudyService:
-    origin = request.headers.get("origin")
-    if (not request.client or not _is_loopback(request.client.host)
-            or not _local_url(str(request.url))
-            or (origin is not None and not _local_url(origin))
-            or request.headers.get("sec-fetch-site") in {"cross-site", "same-site"}):
-        raise StudyProblem("资料库当前仅供本机访问", 403, "study_local_only")
-    service = getattr(request.app.state, "study", None)
-    if service is None:
-        raise StudyProblem("本地资料库未启用或无法打开", 503, "study_unavailable")
-    return service
-
-
-def get_study(request: Request, service: StudyService = Depends(get_local_study)) -> StudyService:
-    supplied = request.headers.get("x-study-token", "").encode()
-    if not compare_digest(supplied, request.app.state.study_token.encode()):
-        raise StudyProblem("请重新建立本地资料库会话", 401, "study_session_required")
-    return service
-
-
-@router.post("/session")
-async def open_session(request: Request, _service: StudyService = Depends(get_local_study)):
-    if request.headers.get("x-study-client") != "1":
-        raise StudyProblem("请从本地应用打开资料库", 403, "study_client_required")
-    return {"token": request.app.state.study_token}
+async def get_study(request: Request) -> StudyService:
+    runtime = request.app.state.study
+    if runtime is None:
+        raise StudyProblem("资料库暂不可用", 503, "study_unavailable")
+    return runtime.for_user(request.state.user.id)
 
 
 @router.get("/status")
@@ -233,6 +192,11 @@ async def submit_question(conversation_id: Identifier, body: StudyQuestion, serv
 @router.post("/analysis", status_code=status.HTTP_202_ACCEPTED)
 async def submit_analysis(body: StudyAnalysisRequest, service: StudyService = Depends(get_study)):
     return service.submit_analysis(body).brief()
+
+
+@router.put("/analysis/{task_id}/archive")
+async def archive_analysis(task_id: Identifier, body: StudyArchiveInput, service: StudyService = Depends(get_study)):
+    return service.archive_analysis(task_id, private_consent=body.private_consent)
 
 
 @router.delete("/analysis/{task_id}", status_code=status.HTTP_204_NO_CONTENT)

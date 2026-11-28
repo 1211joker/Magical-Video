@@ -3,11 +3,10 @@ import unittest
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid5
 
 import httpx
-from fastapi.testclient import TestClient
-
-from main import app
+from auth_support import account_client, register
 from models.schemas import ParseResponse
 from services.ai_client import PROVIDERS
 
@@ -21,8 +20,7 @@ NUMBERED_SUMMARY = "1. 初始化。\n2. 保存提交快照。\n3. 合并分支�
 
 class AIProviderRouteTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
-        self.addCleanup(self.client.close)
+        self.client = self.enterContext(account_client())
         self.requests = []
         self.upstream_status = 200
 
@@ -166,12 +164,19 @@ class AIProviderRouteTests(unittest.TestCase):
         second_request, body = self.requests[1]
         self.assertEqual(str(second_request.url), "https://opencode.ai/inference/go/openai/v1/chat/completions")
         self.assertEqual(second_request.headers["user-agent"], "Magical-Video/0.1.0")
-        self.assertEqual(second_request.headers["x-opencode-session"], "ses_" + SESSION_ID.replace("-", ""))
+        owner = self.client.get("/api/auth/session").json()["id"]
+        self.assertEqual(second_request.headers["x-opencode-session"], f"ses_{uuid5(UUID(owner), UUID(SESSION_ID).hex).hex}")
         self.assertEqual(first_request.headers["x-opencode-session"], second_request.headers["x-opencode-session"])
         self.assertIn(NUMBERED_SUMMARY, body["messages"][1]["content"])
         self.assertTrue(body["messages"][1]["content"].endswith("视频讲了哪些步骤？"))
         self.assertEqual(body["messages"][-2], {"role": "assistant", "content": FIRST_ANSWER})
         self.assertEqual(body["messages"][-1], {"role": "user", "content": FOLLOWUP})
+
+    def test_client_session_ids_are_separate_for_each_account(self):
+        self.assertEqual(self.ask(provider="opencode-go", session_id=SESSION_ID).status_code, 200)
+        register(self.client, "other")
+        self.assertEqual(self.ask(provider="opencode-go", session_id=SESSION_ID).status_code, 200)
+        self.assertEqual(len({request.headers["x-opencode-session"] for request, _ in self.requests}), 2)
 
     def test_unconfigured_selection_does_not_fall_back_to_another_provider(self):
         PROVIDERS["openai"] = replace(PROVIDERS["openai"], api_key="")

@@ -22,6 +22,10 @@ class DownloadNotReady(Exception):
     """文件仍在准备。"""
 
 
+class DownloadQueueFull(Exception):
+    """下载任务容量已满。"""
+
+
 @dataclass(frozen=True)
 class DownloadRedirect:
     url: str = field(repr=False)
@@ -51,6 +55,7 @@ async def prepare_download(
 
 @dataclass
 class DownloadJob:
+    owner: str
     task: asyncio.Task
     expiry: Optional[asyncio.TimerHandle] = None
     active_transfers: int = 0
@@ -62,29 +67,41 @@ class DownloadJobs:
         self._retention_seconds = retention_seconds
         self._jobs: dict[str, DownloadJob] = {}
         self._cleanup_tasks: set[asyncio.Task] = set()
+        self._prepare_slot = asyncio.Semaphore(1)
+
+    async def prepare(self, url, format_id, cookies, panopto_session, bilibili_session):
+        async with self._prepare_slot:
+            return await prepare_download(url, format_id, cookies, panopto_session, bilibili_session)
 
     def start(
         self,
+        owner: str,
         url: str,
         format_id: str,
         cookies: Optional[str],
         panopto_session: Optional[SecretStr] = None,
         bilibili_session: Optional[SecretStr] = None,
     ) -> str:
+        if len(self._jobs) >= 30 or sum(job.owner == owner for job in self._jobs.values()) >= 5:
+            raise DownloadQueueFull
         job_id = secrets.token_urlsafe(24)
-        task = asyncio.create_task(prepare_download(url, format_id, cookies, panopto_session, bilibili_session))
-        self._jobs[job_id] = DownloadJob(task)
+        task = asyncio.create_task(self.prepare(url, format_id, cookies, panopto_session, bilibili_session))
+        self._jobs[job_id] = DownloadJob(owner, task)
         task.add_done_callback(partial(self._schedule_expiry, job_id))
         return job_id
 
-    def result(self, job_id: str) -> Optional[PreparedDownload]:
+    def _owned(self, owner, job_id):
         job = self._jobs.get(job_id)
-        if job is None or job.task.cancelled():
+        if job is None or job.owner != owner or job.task.cancelled():
             raise DownloadJobNotFound
+        return job
+
+    def result(self, owner: str, job_id: str) -> Optional[PreparedDownload]:
+        job = self._owned(owner, job_id)
         return job.task.result() if job.task.done() else None
 
-    def acquire(self, job_id: str) -> tuple[PreparedDownload, Optional[Callable[[], None]]]:
-        download = self.result(job_id)
+    def acquire(self, owner: str, job_id: str) -> tuple[PreparedDownload, Optional[Callable[[], None]]]:
+        download = self.result(owner, job_id)
         if download is None:
             raise DownloadNotReady
         if isinstance(download, DownloadRedirect):
@@ -97,10 +114,8 @@ class DownloadJobs:
         self._cancel_expiry(job)
         return download, partial(self._release_transfer, job_id, job)
 
-    async def discard(self, job_id: str):
-        job = self._jobs.get(job_id)
-        if job is None:
-            return
+    async def discard(self, owner: str, job_id: str):
+        job = self._owned(owner, job_id)
         cleanup = self._start_cleanup(job_id)
         if cleanup is not None and not job.active_transfers:
             await asyncio.shield(cleanup)

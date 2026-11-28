@@ -128,8 +128,8 @@ Magical-Video/
 
 ### 前置条件
 
-- Python 3.10 及以上
-- Node.js 18 及以上
+- Python 3.12 或 3.13
+- Node.js 22.12 及以上
 - ffmpeg（推荐安装；yt-dlp 合并视频和音频时需要）
 - 至少一个 [AI 服务](#-环境变量)的 API Key，用于字幕分析和问答
 - yt-dlp（通过 pip 自动安装）
@@ -140,23 +140,23 @@ Magical-Video/
 ```bash
 cd backend
 python3 -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env              # 初次配置时执行，再填入所选服务的 API Key
 uvicorn main:app --reload --port 8000
 ```
 
-API 服务启动在 `http://localhost:8000`。FastAPI 内置的 Swagger 接口文档可通过浏览器访问 `http://localhost:8000/docs`，在此可以浏览和测试所有 API 接口。
+本地 API 服务在 `http://127.0.0.1:8000` 提供服务。业务接口使用登录后的 Cookie。
 
 ### 前端
 
 ```bash
 cd frontend
 npm install
-npm run dev                       # 开发服务器 http://localhost:5173
+npm run dev                       # 开发服务器 http://127.0.0.1:5173
 ```
 
-Vite 开发服务器自动将 `/api` 请求代理到后端 `localhost:8000`。
+Vite 将 `/api` 代理到本机后端。用 `http://127.0.0.1:5173` 打开页面，在「登录 → 注册账号」设置用户名和密码。自定义地址时同步设置 `SITE_ORIGIN`。[本地启动与注册](./docs/长期记忆与课程Wiki-本地开发计划.md#本地运行)
 
 ### 🐳 Docker 部署
 
@@ -202,7 +202,9 @@ vim backend/.env
 ```bash
 DEEPSEEK_API_KEY=sk-your-key-here       # 示例，也可使用 OPENAI_API_KEY 或 OPENCODE_GO_API_KEY
 # YTDLP_PROXY=http://proxy.example.net:7890 # 可选，填写后端容器可访问的代理
-ALLOWED_ORIGINS=https://your-domain.com # 可选 — 生产环境 CORS 白名单
+SITE_ORIGIN=https://your-domain.com
+AUTH_AI_ACCOUNT_DAILY=30
+AUTH_AI_SITE_DAILY=300
 ```
 
 ```bash
@@ -217,7 +219,7 @@ docker compose ps
 curl -fsS http://127.0.0.1:8080/api/health
 ```
 
-在运行 Docker 的电脑上打开 [http://localhost:8080](http://localhost:8080)。从其他设备访问时，使用下方配置的 HTTPS 域名。
+在浏览器打开 `SITE_ORIGIN` 对应的 HTTPS 域名并登录。宿主机回环端口供反代和健康检查使用。账号和资料库位于 Compose 数据卷，升级前整理好备份。[账号上线与数据恢复](./docs/长期记忆与课程Wiki-服务器部署计划.md)
 
 #### 日常管理
 
@@ -423,7 +425,8 @@ YouTube 支持省略 `https://` 的短链接，例如 `youtu.be/hwP7WQkmECE`。�
 | `OPENAI_MODEL` | 否 | Responses API 的模型 ID，默认 `gpt-5.4-mini` |
 | `OPENCODE_GO_MODEL` | 否 | Go 模型 ID，默认 `deepseek-v4.1-flash` |
 | `YTDLP_PROXY` | 否 | 访问 YouTube 的 HTTP 或 SOCKS5 代理地址 |
-| `ALLOWED_ORIGINS` | 否 | CORS 跨域白名单（逗号分隔）。默认 `*`（开发模式允许所有来源），生产环境设为具体域名 |
+| `SITE_ORIGIN` | 生产必填 | 登录和写入请求使用的站点来源。开发默认 `http://127.0.0.1:5173` |
+| `AUTH_AI_ACCOUNT_DAILY`、`AUTH_AI_SITE_DAILY` | 生产必填 | 每账号和全站每天可发出的 AI 请求数 |
 | `YTDLP_NO_CHECK_CERTIFICATES` | 否 | 跳过 yt-dlp SSL 证书验证。默认 `false`（安全），仅在国内网络劫持环境下临时设为 `true` |
 
 首次配置时，从 `backend/.env.example` 创建 `backend/.env`。把 API Key 写入对应项并重启后端，即可在分析页和问答页选择已配置的模型。默认按 DeepSeek 官方、OpenAI、OpenCode Go 的顺序选择第一个已配置的服务。分析页和问答页共用当前浏览器的模型选择。课程 Wiki 沿用生成该视频分析的模型。
@@ -439,7 +442,7 @@ API Key 可分别从 DeepSeek 平台、OpenAI API 平台或 OpenCode Console 获
 本次更新聚焦安全加固、可靠性提升和生产部署。
 
 **🔴 安全（P0）**：
-- **CORS 白名单**：`ALLOWED_ORIGINS` 环境变量控制允许的来源。默认 `*`（开发模式），生产环境设为具体域名。
+- **站点会话与请求来源**。业务 API 需要登录，修改请求校验 `SITE_ORIGIN`，个人资料与下载按账号隔离。
 - **接口限流**：接入 `slowapi`，按端点 + IP 分级限流。`/api/analyze-stream` 5次/分、`/api/download` 3次/分、`/api/ask` 10次/分、`/api/parse` 20次/分、`/api/thumbnail` 30次/分。
 - **SSL 证书验证**：yt-dlp 默认启用 SSL 证书验证，通过 `YTDLP_NO_CHECK_CERTIFICATES` 环境变量控制（默认 `false` = 安全）。
 - **nginx Basic Auth**：服务端密码保护整个站点。

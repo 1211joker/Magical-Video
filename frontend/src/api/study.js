@@ -1,54 +1,7 @@
-import { readApiError, videoRequest } from './index.js'
+import { apiRequest } from './http.js'
+import { videoRequest } from './index.js'
 
-let sessionRequest
-
-function studySession() {
-  if (!sessionRequest) {
-    const pending = fetch('/api/study/session', {
-      method: 'POST',
-      headers: { 'X-Study-Client': '1' },
-      cache: 'no-store',
-      redirect: 'error',
-    }).then(async response => {
-      if (!response.ok) throw await readApiError(response, '本地资料库暂不可用')
-      return (await response.json()).token
-    })
-    sessionRequest = pending
-    pending.catch(() => {
-      if (sessionRequest === pending) sessionRequest = undefined
-    })
-  }
-  return sessionRequest
-}
-
-async function sendRequest(path, method, data, token) {
-  const response = await fetch('/api/study' + path, {
-    method,
-    cache: 'no-store',
-    redirect: 'error',
-    headers: {
-      'X-Study-Token': token,
-      ...(data === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
-    ...(data === undefined ? {} : {
-      body: JSON.stringify(data),
-    }),
-  })
-  if (!response.ok) throw await readApiError(response, '请求失败，请重试')
-  return response.status === 204 ? undefined : response.json()
-}
-
-async function request(path, method = 'GET', data) {
-  const current = studySession()
-  try {
-    return await sendRequest(path, method, data, await current)
-  } catch (error) {
-    if (error.code !== 'study_session_required') throw error
-    // 后端重启后旧会话会失效。并发请求复用同一次重新握手。
-    if (sessionRequest === current) sessionRequest = undefined
-    return sendRequest(path, method, data, await studySession())
-  }
-}
+const request = (path, method, data) => apiRequest('/study' + path, method, data)
 
 export const studyApi = {
   status: () => request('/status'),
@@ -74,6 +27,9 @@ export const studyApi = {
   linkWiki: (id, target, accepted) => request(`/wiki/${id}/links/${target}`, 'PUT', { accepted }),
   tasks: kind => request(kind ? `/tasks?kind=${encodeURIComponent(kind)}` : '/tasks'),
   task: id => request(`/tasks/${id}`),
+  archiveAnalysis: (id, privateConsent) => request(`/analysis/${id}/archive`, 'PUT', {
+    private_consent: privateConsent,
+  }),
   cancelTask: id => request(`/tasks/${id}`, 'DELETE'),
   deleteAnalysis: id => request(`/analysis/${id}`, 'DELETE'),
   retryTask: (id, credentials, consent) => {

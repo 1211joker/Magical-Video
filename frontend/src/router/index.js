@@ -1,11 +1,13 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { studyApi } from '../api/study.js'
+import { checkAccount } from '../composables/useAuth.js'
 import { analysisTaskLink, conversationLink, videoAnalysisLink } from '../studyUi.js'
 
 const routes = [
   {
     path: '/',
     name: 'home',
+    meta: { public: true },
     component: () => import('../views/HomePage.vue'),
   },
   {
@@ -63,8 +65,15 @@ const routes = [
   {
     path: '/issues',
     name: 'issues',
+    meta: { public: true },
     component: () => import('../views/IssuesPage.vue'),
   },
+  ...['login', 'register'].map(name => ({
+    path: '/' + name,
+    name,
+    meta: { public: true },
+    component: () => import('../views/AuthPage.vue'),
+  })),
 ]
 
 const router = createRouter({
@@ -73,6 +82,18 @@ const router = createRouter({
   scrollBehavior(to, from, savedPosition) {
     return savedPosition ?? (to.path === from.path ? false : { top: 0 })
   },
+})
+
+export function loginLink(to) {
+  return { name: 'login', query: { redirect: to.fullPath } }
+}
+
+router.beforeEach(async to => {
+  if (to.meta.public) return
+  try {
+    if (await checkAccount()) return
+  } catch { /* 登录页可以重新检查服务状态。 */ }
+  return loginLink(to)
 })
 
 export default router

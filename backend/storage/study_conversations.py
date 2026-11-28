@@ -28,7 +28,7 @@ def create_conversation(connection, scope, scope_id):
 def conversation_row(connection, conversation_id):
     return require_row(connection.execute(
         "SELECT * FROM conversations WHERE id=?", (conversation_id,),
-    ).fetchone(), "对话已删除")
+    ).fetchone(), "找不到这条对话")
 
 
 def list_conversations(connection, scope, scope_id):

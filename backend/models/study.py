@@ -43,6 +43,10 @@ class StudyAnalysisRequest(AnalyzeVideoRequest):
     private_consent: bool = False
 
 
+class StudyArchiveInput(BaseModel):
+    private_consent: bool = False
+
+
 class StudyRetry(BaseModel):
     bilibili_session: Optional[SecretStr] = None
     panopto_session: Optional[SecretStr] = None

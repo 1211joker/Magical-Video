@@ -4,9 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi.testclient import TestClient
-
-from main import app
+from auth_support import account_client
 from services.download_service import DownloadJobNotFound, DownloadJobs
 from services.ytdlp_service import PreparedVideo
 
@@ -17,7 +15,7 @@ class DownloadResumeTests(unittest.TestCase):
             path = Path(directory) / "sample.mp4"
             path.write_bytes(b"abcdefgh")
             with patch("services.download_service.prepare_download", return_value=PreparedVideo(path)) as prepare:
-                with TestClient(app) as client:
+                with account_client() as client:
                     created = client.post("/api/download/jobs", json={"url": "https://youtu.be/example"})
                     self.assertEqual(created.status_code, 202)
                     job_url = "/api/download/jobs/" + created.json()["job_id"]
@@ -41,18 +39,18 @@ class DownloadLifecycleTests(unittest.IsolatedAsyncioTestCase):
             path.touch()
             jobs = DownloadJobs(retention_seconds=0.02)
             with patch("services.download_service.prepare_download", return_value=PreparedVideo(path)):
-                job_id = jobs.start("https://youtu.be/example", "best", None)
+                job_id = jobs.start("owner", "https://youtu.be/example", "best", None)
                 await asyncio.sleep(0)
-                _, finish_first = jobs.acquire(job_id)
-                _, finish_second = jobs.acquire(job_id)
+                _, finish_first = jobs.acquire("owner", job_id)
+                _, finish_second = jobs.acquire("owner", job_id)
                 finish_first()
                 await asyncio.sleep(0.04)
                 self.assertTrue(path.is_file())
-                self.assertIsNotNone(jobs.result(job_id))
+                self.assertIsNotNone(jobs.result("owner", job_id))
                 finish_second()
                 with self.assertRaises(DownloadJobNotFound):
                     await asyncio.sleep(0.04)
-                    jobs.result(job_id)
+                    jobs.result("owner", job_id)
                 await jobs.close()
             self.assertFalse(path.exists())
 
@@ -62,12 +60,12 @@ class DownloadLifecycleTests(unittest.IsolatedAsyncioTestCase):
             path.touch()
             jobs = DownloadJobs()
             with patch("services.download_service.prepare_download", return_value=PreparedVideo(path)):
-                job_id = jobs.start("https://youtu.be/example", "best", None)
+                job_id = jobs.start("owner", "https://youtu.be/example", "best", None)
                 await asyncio.sleep(0)
-                _, finish = jobs.acquire(job_id)
-                await asyncio.wait_for(jobs.discard(job_id), timeout=1)
+                _, finish = jobs.acquire("owner", job_id)
+                await asyncio.wait_for(jobs.discard("owner", job_id), timeout=1)
                 with self.assertRaises(DownloadJobNotFound):
-                    jobs.acquire(job_id)
+                    jobs.acquire("owner", job_id)
                 self.assertTrue(path.is_file())
                 finish()
                 await asyncio.wait_for(jobs.close(), timeout=1)

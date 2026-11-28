@@ -27,7 +27,7 @@
 
     <!-- 页面内容 -->
     <main id="main-content" tabindex="-1">
-      <router-view v-slot="{ Component }">
+      <router-view v-if="route.meta.public || currentAccount" :key="accountRevision" v-slot="{ Component }">
         <Transition name="page" mode="out-in">
           <component :is="Component" />
         </Transition>
@@ -37,11 +37,19 @@
 </template>
 
 <script setup>
-import { ref, onBeforeUnmount } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, onBeforeUnmount, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import NavBar from './components/NavBar.vue'
+import { currentAccount, accountRevision, watchAccountSession } from './composables/useAuth.js'
+import { loginLink } from './router/index.js'
 
 const route = useRoute()
+const router = useRouter()
+let stopWatching
+onMounted(() => { stopWatching = watchAccountSession() })
+watch(currentAccount, (account, previous) => {
+  if (!account && previous && !route.meta.public) void router.replace(loginLink(route))
+})
 
 // === 主题切换 ===
 const THEME_KEY = 'app-theme-preference'
@@ -83,6 +91,7 @@ function onSystemThemeChange() {
 mqDark.addEventListener('change', onSystemThemeChange)
 
 onBeforeUnmount(() => {
+  stopWatching?.()
   mqDark.removeEventListener('change', onSystemThemeChange)
 })
 </script>

@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from fastapi.testclient import TestClient
+from auth_support import account_client
 
 from main import app
 from services.subtitle_format import normalize_subtitle_segments
@@ -110,7 +110,7 @@ class SubtitleRouteTests(unittest.TestCase):
             info=SimpleNamespace(platform="panopto"),
             subtitles=AsyncMock(return_value=subtitles),
         )
-        with TestClient(app) as client, \
+        with account_client() as client, \
              patch("routers.analyze.open_video", return_value=video) as open_video, \
              patch("routers.analyze.select_provider") as select_provider:
             response = client.post("/api/subtitles", json={
@@ -127,7 +127,7 @@ class SubtitleRouteTests(unittest.TestCase):
 
     def test_extract_reports_no_captions(self):
         video = SimpleNamespace(info=SimpleNamespace(platform="youtube"), subtitles=AsyncMock(return_value=None))
-        with TestClient(app) as client, patch("routers.analyze.open_video", return_value=video):
+        with account_client() as client, patch("routers.analyze.open_video", return_value=video):
             response = client.post("/api/subtitles", json={"url": "https://example.test/video"})
         self.assertEqual(response.status_code, 404)
         self.assertIn("没有可用字幕", response.json()["detail"])
@@ -167,8 +167,10 @@ class SubtitleCleanupTests(unittest.IsolatedAsyncioTestCase):
             return await _extract_bilibili_subs(url, "fixture-cookie")
 
         video = SimpleNamespace(info=SimpleNamespace(platform="bilibili"), subtitles=subtitles)
-        with patch("routers.analyze.open_video", return_value=video), \
+        with account_client() as browser, patch("routers.analyze.open_video", return_value=video), \
              patch("services.subtitle_service._download_bilibili_subs", side_effect=downloading):
+            session = browser.cookies.get("magical-session")
+            scope["headers"].extend([(b"origin", b"http://testserver"), (b"cookie", f"magical-session={session}".encode())])
             send = AsyncMock()
             task = asyncio.create_task(app(scope, incoming.get, send))
             try:
