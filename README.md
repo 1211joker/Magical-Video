@@ -6,7 +6,7 @@ Magical Video analyzes videos from YouTube, Bilibili and PolyU Panopto. It sends
 
 The core value is the AI analysis pipeline: instead of watching a 30-minute video, you can skim a structured breakdown (overview, outline, key points, conclusions, and a knowledge-tree mind map) in under a minute, then dive deeper into specific topics through AI-powered Q&A.
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.12%20or%203.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.5-4fc08d.svg)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/Vite-8.1-646cff.svg)](https://vitejs.dev/)
@@ -39,7 +39,7 @@ After the AI analysis, you can ask questions about the video content and get ans
 
 The Q&A system prompt instructs the model to base answers strictly on subtitle content, quote original text with「」marks, and honestly state when information is not covered in the video.
 
-On localhost, save analyses to the library to group videos, build course Wikis, and resume conversations across videos. Saved analyses use background tasks and can be reopened from recent analyses. [Local library guide](docs/长期记忆与课程Wiki-本地开发计划.md)
+Register with a username and password to save analyses to a personal library, group videos, build course Wikis, and resume conversations across videos. The same account can open its library on another device. Saved analyses use background tasks and can be reopened from recent analyses. [Local library guide](docs/长期记忆与课程Wiki-本地开发计划.md)
 
 ---
 
@@ -56,6 +56,7 @@ The application queries available formats and resolutions, then uses yt-dlp to p
 | Component | Technology |
 |-----------|-----------|
 | Backend framework | FastAPI (Python) |
+| Accounts and personal libraries | SQLite |
 | Download engine | yt-dlp |
 | AI providers | DeepSeek, OpenAI, OpenCode Go |
 | YouTube subtitles | youtube-transcript-api |
@@ -160,149 +161,46 @@ Vite proxies `/api` requests to the local backend. Open `http://127.0.0.1:5173` 
 
 ### 🐳 Docker Deployment
 
-The project includes a complete Docker Compose setup for production deployment. Two containers work together:
+Docker Compose runs Nginx and FastAPI. Nginx serves the Vue app and forwards `/api` to the internal backend. Terminate HTTPS on the host with Nginx or a hosting panel. [Full Docker deployment guide (Chinese)](docs/长期记忆与课程Wiki-服务器部署计划.md)
 
-```
-Browser (127.0.0.1:8080 on the host or the configured HTTPS domain)
-    │
-    ▼
-┌──────────────────────────┐
-│  nginx (nginx:alpine)    │  ← Static files + reverse proxy
-│  /              → dist/  │     gzip, security headers, SPA fallback
-│  /api/*         → proxy  │
-└──────────┬───────────────┘
-           │ internal network
-           ▼
-┌──────────────────────────┐
-│  backend (python:3.12)   │  ← FastAPI + uvicorn
-│  :8000                   │     yt-dlp, AI model requests, rate limiting
-└──────────────────────────┘
-```
+#### 1. Get the source and configure the site
 
-#### Prerequisites
-
-- **Docker** ≥ 20.10 and **Docker Compose** ≥ 2.0
-- An API key for at least one AI provider to use analysis and Q&A
-- (Optional) An HTTP proxy if YouTube is blocked in your region
-
-#### Quick Start
+Install Git, Docker Engine and the Compose plugin, and prepare a domain with a TLS certificate. On a new deployment, run the following commands.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/1211joker/Magical-Video.git
+git clone --branch main https://github.com/1211joker/Magical-Video.git
 cd Magical-Video
-
-# 2. Create and configure the environment file
-cp backend/.env.example backend/.env
-vim backend/.env
+install -m 600 backend/.env.example backend/.env
+vi backend/.env
 ```
 
-Edit `backend/.env` and fill in:
+Set the browser-facing HTTPS origin, daily AI limits and an API key in `backend/.env`. For an existing installation, edit the existing file.
 
-```bash
-DEEPSEEK_API_KEY=sk-your-key-here       # Example. OPENAI_API_KEY or OPENCODE_GO_API_KEY also works.
-# YTDLP_PROXY=http://proxy.example.net:7890 # Optional proxy reachable from the backend container
-SITE_ORIGIN=https://your-domain.com
+```dotenv
+SITE_ORIGIN=https://video.example.com
 AUTH_AI_ACCOUNT_DAILY=30
 AUTH_AI_SITE_DAILY=300
+DEEPSEEK_API_KEY=your-key-here
 ```
 
+To use a different provider, set `OPENAI_API_KEY` or `OPENCODE_GO_API_KEY`. [Environment template](backend/.env.example)
+
+#### 2. Build and wait for readiness
+
 ```bash
-# 3. Start the application
-docker compose up -d
-
-# 4. Verify both containers are running
+docker compose config --quiet
+docker compose up -d --build --wait --wait-timeout 180
 docker compose ps
-# Expected output: backend (Up) + nginx (Up)
-
-# 5. Check the host entry point
 curl -fsS http://127.0.0.1:8080/api/health
 ```
 
-Use the HTTPS address configured in `SITE_ORIGIN` to sign in. The loopback port serves the host proxy and health checks. Back up the Compose data volume before upgrading. [Account deployment and recovery](./docs/长期记忆与课程Wiki-服务器部署计划.md)
+Both services should report `healthy`. Point the host HTTPS proxy for the whole site to `http://127.0.0.1:8080`. Open the HTTPS domain and choose **Log in → Register**. To assign the administrator role, register the account first and run `docker compose exec backend python -m maintenance promote-admin --username site_admin`.
 
-#### Managing the Application
+#### 3. Back up, upgrade and troubleshoot
 
-```bash
-# View logs
-docker compose logs -f              # All containers
-docker compose logs -f backend      # Backend only
-docker compose logs -f nginx        # Nginx only
+Accounts and personal libraries live in the `app-data` volume. Embedding model files are cached in `model-cache`. Before upgrading, make a backup using the guide, then run `git pull --ff-only origin main` and the build and start command above. Use `docker compose stop` to pause services. `docker compose down -v` removes the project's managed volumes.
 
-# Restart after .env changes or code updates
-docker compose down
-docker compose up -d --build        # Rebuild images, restart
-
-# Stop the application
-docker compose stop
-
-# Stop and remove containers (data in .env is preserved)
-docker compose down
-```
-
-#### Updating to a New Version
-
-```bash
-git pull                            # Pull latest code
-docker compose down                 # Stop current containers
-docker compose up -d --build        # Rebuild with latest code
-```
-
-#### HTTPS Setup
-
-The default configuration maps HTTP port 80 in the container to `127.0.0.1:8080` on the host. HTTPS can terminate at the host proxy or in the container.
-
-**Option A — Reverse proxy in front (recommended)**
-
-Use this Nginx configuration on the host to terminate HTTPS and forward requests to the container.
-
-```nginx
-# Host nginx example
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_buffering off;
-    }
-}
-```
-
-The container's Nginx accepts the client address from the host proxy through the Compose gateway. Uvicorn trusts the internal address of the Nginx container, so SlowAPI can count requests per client IP. If you change the Compose gateway, update `set_real_ip_from` in `nginx.conf`.
-
-**Option B — SSL inside Docker**
-
-Mount your certificate, add a separate 443 server block to `nginx.conf` and update `docker-compose.yml` to expose port 443. Reuse the API proxy settings for the public 443 listener and keep the host-proxy real-IP settings in the existing HTTP server block.
-
-```yaml
-# nginx service settings in docker-compose.yml
-ports:
-  - "127.0.0.1:8080:80"
-  - "443:443"
-volumes:
-  - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-  - ./ssl/cert.pem:/etc/nginx/ssl/cert.pem:ro
-  - ./ssl/key.pem:/etc/nginx/ssl/key.pem:ro
-```
-
-#### Troubleshooting
-
-| Problem | Check |
-|---------|-------|
-| `port 8080 already in use` | Change the published host port in `docker-compose.yml` and update the access URL and host reverse proxy |
-| Backend can't connect to an AI provider | Check the API key, model ID and backend network. See `docker compose logs backend` |
-| YouTube features don't work | Configure `YTDLP_PROXY` in `backend/.env`, then `docker compose up -d --build` |
-| `ERR_EMPTY_RESPONSE` in browser | Check `127.0.0.1:8080` on the Docker host, then check the upstream address of the HTTPS proxy |
-| Container keeps restarting | `docker compose logs backend` — often a missing `.env` or invalid API key |
-| Rate limit (429) errors | You've hit the per-IP rate limit. Wait 1 minute for the counter to reset |
+For startup problems, check `docker compose ps` and `docker compose logs --tail=100 backend nginx`. The guide includes the host HTTPS configuration, origin errors, legacy data imports and restoring to a new volume. [HTTPS, backup and recovery](docs/长期记忆与课程Wiki-服务器部署计划.md)
 
 ### Manual Deployment (without Docker)
 
@@ -310,7 +208,7 @@ volumes:
 cd frontend && npm run build      # Output: frontend/dist/
 ```
 
-Serve `frontend/dist/` with nginx and proxy `/api/*` to the FastAPI backend. A production `nginx.conf` template is included in the repository for reference.
+Serve `frontend/dist/` with Nginx and proxy `/api/*` to the actual FastAPI address. Set `SITE_ORIGIN` to the browser-facing HTTPS origin for production.
 
 ### Proxy Configuration
 
@@ -436,6 +334,11 @@ OpenCode Go's chat inference is designed for coding agents. Its DeepSeek models 
 ---
 
 ## 📋 Changelog
+
+### 2026-11-28 — Accounts and Docker deployment
+
+- Username registration, sign-in and private libraries that follow the account across devices. A maintenance command assigns the administrator role.
+- Docker Compose waits for backend and Nginx health checks. Named volumes hold account data and the model cache. The deployment guide covers HTTPS, upgrades and recovery.
 
 ### v0.2.0 — Production Readiness (2026-06-30)
 

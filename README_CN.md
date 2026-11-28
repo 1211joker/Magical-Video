@@ -6,7 +6,7 @@ Magical Video 是一个基于 AI 的视频内容分析工具。输入 YouTube、
 
 核心价值在于 AI 分析流程：一段 30 分钟的视频，可以在不到一分钟内浏览其结构化拆解结果（概述、大纲、关键要点、结论及知识树思维导图），还可通过 AI 问答针对特定话题深入追问。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.12%20or%203.13-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Vue](https://img.shields.io/badge/Vue-3.5-4fc08d.svg)](https://vuejs.org/)
 [![Vite](https://img.shields.io/badge/Vite-8.1-646cff.svg)](https://vitejs.dev/)
@@ -39,7 +39,7 @@ AI 分析完成后，可以就视频内容向 AI 提问，获取基于字幕原�
 
 问答系统提示词要求 AI 严格基于字幕内容回答，用「」标注原文引用，视频未涉及的内容如实告知。
 
-本地运行时，可把解析保存到资料库，按分组整理视频、生成课程 Wiki，或跨视频提问并继续历史对话。已保存的分析通过后台任务执行，也可从「最近解析」找回进度。[本地资料库说明](docs/长期记忆与课程Wiki-本地开发计划.md)
+用用户名注册登录后，可将解析保存到个人资料库，按分组整理视频、生成课程 Wiki，或跨视频提问并继续历史对话。同一账号可在不同设备读取个人资料。已保存的分析通过后台任务执行，也可从「最近解析」找回进度。[本地资料库说明](docs/长期记忆与课程Wiki-本地开发计划.md)
 
 ---
 
@@ -56,6 +56,7 @@ AI 分析完成后，可以就视频内容向 AI 提问，获取基于字幕原�
 | 组件 | 技术 |
 |------|------|
 | 后端框架 | FastAPI (Python) |
+| 账号与个人资料 | SQLite |
 | 下载引擎 | yt-dlp |
 | AI 服务 | DeepSeek 官方、OpenAI、OpenCode Go |
 | YouTube 字幕 | youtube-transcript-api |
@@ -160,149 +161,46 @@ Vite 将 `/api` 代理到本机后端。用 `http://127.0.0.1:5173` 打开页面
 
 ### 🐳 Docker 部署
 
-项目包含完整的 Docker Compose 生产部署配置，两个容器协同工作：
+项目用 Docker Compose 运行两个容器。Nginx 提供 Vue 页面和 `/api` 代理，FastAPI 在内部网络处理账号、字幕、AI 请求和个人资料库。服务器的 Nginx 或宝塔负责 HTTPS。[完整 Docker 部署教程](docs/长期记忆与课程Wiki-服务器部署计划.md)
 
-```
-浏览器（宿主机 127.0.0.1:8080 或配置的 HTTPS 域名）
-    │
-    ▼
-┌──────────────────────────┐
-│  nginx (nginx:alpine)    │  ← 静态文件 + 反向代理
-│  /              → dist/  │     gzip 压缩、安全头、SPA 回退
-│  /api/*         → proxy  │
-└──────────┬───────────────┘
-           │ 内部网络
-           ▼
-┌──────────────────────────┐
-│  backend (python:3.12)   │  ← FastAPI + uvicorn
-│  :8000                   │     yt-dlp、AI 模型调用、接口限流
-└──────────────────────────┘
-```
+#### 1. 获取项目和填写配置
 
-#### 前置条件
-
-- **Docker** ≥ 20.10 和 **Docker Compose** ≥ 2.0
-- 至少一个 AI 服务的 API Key，用于字幕分析和问答
-- （可选）HTTP 代理，如果所在地区无法直连 YouTube
-
-#### 快速开始
+服务器需要 Git、Docker Engine、Compose 插件和一个 HTTPS 域名。首次部署时执行以下命令。
 
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/1211joker/Magical-Video.git
+git clone --branch main https://github.com/1211joker/Magical-Video.git
 cd Magical-Video
-
-# 2. 创建并编辑环境变量文件
-cp backend/.env.example backend/.env
-vim backend/.env
+install -m 600 backend/.env.example backend/.env
+vi backend/.env
 ```
 
-编辑 `backend/.env`，填入：
+在 `backend/.env` 填写浏览器访问的 HTTPS 地址、正整数 AI 日额度及所用模型的 API Key。已有部署继续编辑原文件。
 
-```bash
-DEEPSEEK_API_KEY=sk-your-key-here       # 示例，也可使用 OPENAI_API_KEY 或 OPENCODE_GO_API_KEY
-# YTDLP_PROXY=http://proxy.example.net:7890 # 可选，填写后端容器可访问的代理
-SITE_ORIGIN=https://your-domain.com
+```dotenv
+SITE_ORIGIN=https://video.example.com
 AUTH_AI_ACCOUNT_DAILY=30
 AUTH_AI_SITE_DAILY=300
+DEEPSEEK_API_KEY=填写自己的密钥
 ```
 
+也可按示例文件配置 `OPENAI_API_KEY` 或 `OPENCODE_GO_API_KEY`。[环境变量示例](backend/.env.example)
+
+#### 2. 构建并等待就绪
+
 ```bash
-# 3. 启动应用
-docker compose up -d
-
-# 4. 验证两个容器均在运行
+docker compose config --quiet
+docker compose up -d --build --wait --wait-timeout 180
 docker compose ps
-# 预期输出：backend (Up) + nginx (Up)
-
-# 5. 验证宿主机上的访问入口
 curl -fsS http://127.0.0.1:8080/api/health
 ```
 
-在浏览器打开 `SITE_ORIGIN` 对应的 HTTPS 域名并登录。宿主机回环端口供反代和健康检查使用。账号和资料库位于 Compose 数据卷，升级前整理好备份。[账号上线与数据恢复](./docs/长期记忆与课程Wiki-服务器部署计划.md)
+两个服务应显示 `healthy`。宿主机或宝塔把整个 HTTPS 站点反代到 `http://127.0.0.1:8080`。从域名进入「登录 → 注册账号」，就能使用个人资料库。需要管理员角色时，注册目标账号后在服务器运行 `docker compose exec backend python -m maintenance promote-admin --username site_admin`。
 
-#### 日常管理
+#### 3. 备份、升级与排障
 
-```bash
-# 查看日志
-docker compose logs -f              # 所有容器
-docker compose logs -f backend      # 仅后端
-docker compose logs -f nginx        # 仅 nginx
+账号和资料保存在 `app-data` 卷，语义模型缓存在 `model-cache` 卷。升级前按教程备份账号与个人库，然后运行 `git pull --ff-only origin main` 和上面的构建启动命令。`docker compose stop` 可以暂停服务。`docker compose down -v` 会删除 Compose 管理的数据卷。
 
-# 修改 .env 或代码后重新构建
-docker compose down
-docker compose up -d --build        # 重新构建镜像并启动
-
-# 停止应用
-docker compose stop
-
-# 停止并删除容器（.env 文件不受影响）
-docker compose down
-```
-
-#### 更新到新版本
-
-```bash
-git pull                            # 拉取最新代码
-docker compose down                 # 停止当前容器
-docker compose up -d --build        # 重新构建并启动
-```
-
-#### HTTPS 配置
-
-默认配置将容器的 HTTP 端口 80 映射到宿主机 `127.0.0.1:8080`。生产环境可由宿主代理或容器提供 HTTPS。
-
-**方案 A — 前置反向代理（推荐）**
-
-宿主机的 Nginx 可用以下配置处理 HTTPS 并转发到容器。
-
-```nginx
-# 宿主机 nginx 示例
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-    ssl_certificate /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_buffering off;
-    }
-}
-```
-
-容器 Nginx 从 Compose 网关接收宿主代理的客户端地址，Uvicorn 仅信任容器 Nginx 的内部地址。SlowAPI 据此按客户端 IP 计数。若调整 Compose 网关，需同步 `nginx.conf` 的 `set_real_ip_from`。
-
-**方案 B — Docker 内部 SSL**
-
-将证书挂载到容器内，在 `nginx.conf` 中新增单独的 443 服务块，并更新 `docker-compose.yml` 暴露 443 端口。直接接收公网请求的 443 服务块以连接来源为准，沿用 API 转发配置，并将宿主代理的 realip 信任设置留在原有的 HTTP 服务块。
-
-```yaml
-# docker-compose.yml 中 nginx 服务的配置
-ports:
-  - "127.0.0.1:8080:80"
-  - "443:443"
-volumes:
-  - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-  - ./ssl/cert.pem:/etc/nginx/ssl/cert.pem:ro
-  - ./ssl/key.pem:/etc/nginx/ssl/key.pem:ro
-```
-
-#### 常见问题排查
-
-| 问题 | 检查方法 |
-|------|----------|
-| `8080 端口已被占用` | 在 `docker-compose.yml` 中调整宿主机映射端口，并同步访问地址和宿主反向代理 |
-| 后端无法连接 AI 服务 | 检查 `backend/.env` 中对应的 API Key、模型 ID 和后端网络，运行 `docker compose logs backend` 查看日志 |
-| YouTube 功能不可用 | 在 `backend/.env` 中配置 `YTDLP_PROXY`，然后 `docker compose up -d --build` 重建 |
-| 浏览器显示空白页 | 在宿主机检查 `127.0.0.1:8080` 是否可用，再检查 HTTPS 入口的转发地址 |
-| 容器反复重启 | `docker compose logs backend` — 常见原因为缺少 `.env` 或 API Key 无效 |
-| 限流 429 错误 | 已触发单 IP 限流，等待 1 分钟计数器自动重置 |
+出现启动问题时，先运行 `docker compose ps` 和 `docker compose logs --tail=100 backend nginx`。反代配置、端口冲突、403 来源错误、旧库导入和新卷恢复的操作步骤都在部署教程。[HTTPS 与备份恢复](docs/长期记忆与课程Wiki-服务器部署计划.md)
 
 ### 手动部署（不使用 Docker）
 
@@ -310,7 +208,7 @@ volumes:
 cd frontend && npm run build      # 输出到 frontend/dist/
 ```
 
-将 `frontend/dist/` 部署到 nginx，并将 `/api/*` 代理到 FastAPI 后端。仓库中已包含生产环境 `nginx.conf` 模板供参考。
+将 `frontend/dist/` 部署到 Nginx，并将 `/api/*` 代理到 FastAPI 的实际监听地址。使用 HTTPS 站点时把公开地址填入 `SITE_ORIGIN`。
 
 ### 代理配置
 
@@ -436,6 +334,11 @@ API Key 可分别从 DeepSeek 平台、OpenAI API 平台或 OpenCode Console 获
 ---
 
 ## 📋 变更日志
+
+### 2026-11-28 — 账号与 Docker 部署
+
+- 用户名注册登录，账号资料独立，可在不同设备读取。维护者可通过命令设置管理员角色。
+- Docker Compose 等待后端与 Nginx 通过健康检查，账号资料和模型缓存使用持久卷。部署教程包含 HTTPS 反代、升级及备份恢复。
 
 ### v0.2.0 — 生产就绪（2026-06-30）
 

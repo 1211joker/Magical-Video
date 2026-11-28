@@ -1,12 +1,20 @@
-# Docker
-node_modules/
-backend/__pycache__/
-backend/.env
+# Local dependencies and build outputs
+**/node_modules/
+**/.venv/
+backend/venv/
+frontend/dist/
+**/__pycache__/
+**/*.pyc
+
+# Local configuration and data
+**/.env
+**/.env.*
 backend/.study-data/
-*.pyc
-__pycache__/
+
+# Repository metadata
 .git/
 .gitignore
 *.md
 docs/
 .claude/
+.codex/

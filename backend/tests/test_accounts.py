@@ -3,6 +3,7 @@ from contextlib import closing, ExitStack
 from dataclasses import replace
 import json
 from pathlib import Path
+from shutil import copyfile
 import sqlite3
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -20,7 +21,6 @@ from services.ai_client import PROVIDERS
 from services.analysis_service import analyze_subtitles
 from services.auth import SESSION_IDLE
 from services.ytdlp_service import PreparedVideo
-from storage.study_db import StudyDatabase
 from test_study import VIDEOS, fake_analysis, fake_answer, fake_open, fake_wiki
 
 PREFIX = "/api/study"
@@ -174,8 +174,20 @@ class AccountTests(unittest.TestCase):
                             "CREATE TABLE email_actions (token_hash TEXT PRIMARY KEY, purpose TEXT, email TEXT, expires_at INTEGER)"
                         )
                     connection.execute(f"PRAGMA user_version={version}")
-                backup(legacy, root / "snapshot")
-                restore(root / "snapshot", root / "restored")
+                snapshot = root / "snapshot"
+                backup(legacy, snapshot)
+                for path in snapshot.rglob("*.sqlite3"):
+                    with closing(sqlite3.connect(path)) as archive:
+                        self.assertEqual(archive.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+                        archive.execute("PRAGMA journal_mode=WAL")
+                directories = [snapshot, *(path for path in snapshot.rglob("*") if path.is_dir())]
+                try:
+                    for path in directories:
+                        path.chmod(0o500)
+                    restore(snapshot, root / "restored")
+                finally:
+                    for path in directories:
+                        path.chmod(0o700)
                 expected = {"id": user["id"], "username": legacy_name, "is_admin": False}
                 with account_client(root / "restored", signed_in=False) as client:
                     client.cookies.set("magical-session", token)
@@ -321,7 +333,8 @@ class AccountLibraryTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             legacy = root / "legacy.sqlite3"
-            StudyDatabase(legacy).initialize()
+            legacy_wal = root / "legacy.sqlite3-wal"
+            working_copy = root / "legacy-working.sqlite3"
             with account_client(root / "source") as client:
                 account = client.get("/api/auth/session").json()
                 video = wait_job(client, submit_analysis(client))["result"]
@@ -336,16 +349,21 @@ class AccountLibraryTests(unittest.TestCase):
                 turns = client.get(f"{PREFIX}/conversations/{conversation}").json()["turns"]
                 self.assertTrue(turns[0]["citations"])
                 source_file = root / "source" / "users" / account["id"] / "library.sqlite3"
-            with closing(sqlite3.connect(source_file)) as source, closing(sqlite3.connect(legacy)) as destination:
+            with closing(sqlite3.connect(source_file)) as source, closing(sqlite3.connect(working_copy)) as destination:
                 source.backup(destination)
+                destination.execute("PRAGMA journal_mode=WAL")
+                destination.execute("PRAGMA wal_autocheckpoint=0")
+                destination.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 destination.execute("UPDATE jobs SET state='running', phase='ai' WHERE id=?", (wiki_job,))
                 destination.commit()
-            before = legacy.read_bytes()
+                copyfile(working_copy, legacy)
+                copyfile(root / "legacy-working.sqlite3-wal", legacy_wal)
+            before = legacy.read_bytes(), legacy_wal.read_bytes()
             with account_client(root / "target") as client:
                 old_session = client.cookies.get("magical-session")
                 self.assertEqual(client.get(PREFIX + "/library").json()["videos"], [])
             import_library(root / "target", legacy, DEFAULT_USERNAME)
-            self.assertEqual(legacy.read_bytes(), before)
+            self.assertEqual((legacy.read_bytes(), legacy_wal.read_bytes()), before)
             with self.assertRaisesRegex(ValueError, "已有资料"):
                 import_library(root / "target", legacy, DEFAULT_USERNAME)
             backup(root / "target", root / "snapshot")
